@@ -367,6 +367,41 @@ public abstract class AbstractBeamInter
         return (BeamGroupInter) getEnsemble();
     }
 
+    //-------------------//
+    // setMedianAndHeight //
+    //-------------------//
+    /**
+     * Assign median line and height (for manual beam creation).
+     * The beam area/bounds are recomputed.
+     *
+     * @param median median line, from left to right
+     * @param height beam thickness in pixels
+     */
+    public void setMedianAndHeight (Line2D median,
+                                    double height)
+    {
+        this.median = median;
+        this.height = height;
+        computeArea();
+    }
+
+    //---------------//
+    // setMedianLine //
+    //---------------//
+    /**
+     * Move the median line (for manual "make parallel" fix).
+     * The beam area/bounds are recomputed.
+     *
+     * @param p1 new left end
+     * @param p2 new right end
+     */
+    public void setMedianLine (Point2D p1,
+                               Point2D p2)
+    {
+        median.setLine(p1, p2);
+        computeArea();
+    }
+
     //----------//
     // getHeads //
     //----------//

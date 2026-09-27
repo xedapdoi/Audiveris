@@ -55,11 +55,14 @@ import org.audiveris.omr.sheet.ui.SheetEditor;
 import org.audiveris.omr.sheet.ui.StaffEditingTask;
 import org.audiveris.omr.sheet.ui.StaffEditor;
 import org.audiveris.omr.sig.SIGraph;
+import org.audiveris.omr.sig.inter.AbstractBeamInter;
 import org.audiveris.omr.sig.inter.AbstractChordInter;
 import org.audiveris.omr.sig.inter.AbstractNumberInter;
 import org.audiveris.omr.sig.inter.AlterInter;
 import org.audiveris.omr.sig.inter.BarConnectorInter;
 import org.audiveris.omr.sig.inter.BarlineInter;
+import org.audiveris.omr.sig.inter.BeamGroupInter;
+import org.audiveris.omr.sig.inter.BeamInter;
 import org.audiveris.omr.sig.inter.BraceInter;
 import org.audiveris.omr.sig.inter.ChordNameInter;
 import org.audiveris.omr.sig.inter.HeadChordInter;
@@ -1577,6 +1580,173 @@ public class InterController
         }.execute();
     }
 
+    //------------//
+    // beamChords //
+    //------------//
+    /**
+     * Create manual beam(s) over the provided head chords.
+     * <p>
+     * All chords must belong to the same system, each with a stem.
+     * One beam spans from the first to the last stem tail; when beamCount is 2,
+     * a second beam is added parallel to the first, offset by one interline-based gap.
+     * Beams, group and beam-stem relations are all flagged manual and fully undoable.
+     *
+     * @param chords    the head chords to beam together (2 or more, x-ordered)
+     * @param beamCount 1 or 2 beams to create
+     */
+    @UIThread
+    public void beamChords (final List<HeadChordInter> chords,
+                            final int beamCount)
+    {
+        new CtrlTask(DO, "beamChords")
+        {
+            private final List<BeamInter> newBeams = new ArrayList<>();
+
+            private BeamGroupInter newGroup = new BeamGroupInter();
+
+            @Override
+            protected void build ()
+            {
+                final SIGraph sig = chords.get(0).getSig();
+                final List<HeadChordInter> sorted = new ArrayList<>(chords);
+                Collections.sort(sorted, Inters.byAbscissa);
+
+                final List<StemInter> stems = new ArrayList<>();
+
+                for (HeadChordInter ch : sorted) {
+                    final StemInter stem = ch.getStem();
+
+                    if (stem == null) {
+                        logger.warn("Chord {} has no stem, ignored", ch.getId());
+                    } else {
+                        stems.add(stem);
+                    }
+                }
+
+                if (stems.size() < 2) {
+                    logger.warn("Need at least 2 stemmed chords to beam");
+
+                    return;
+                }
+
+                // Median through first/last stem tails
+                final Point firstTail = sorted.get(0).getTailLocation();
+                final Point lastTail = sorted.get(sorted.size() - 1).getTailLocation();
+                final double height = 35; // Consistent with typical detected beams
+                final double gap = sheet.getScale().getInterline();
+
+                for (int b = 0; b < beamCount; b++) {
+                    final double dy = b * gap;
+                    final Line2D median = new Line2D.Double(
+                            firstTail.x,
+                            firstTail.y + dy,
+                            lastTail.x,
+                            lastTail.y + dy);
+                    final BeamInter beam = new BeamInter(1.0);
+                    beam.setMedianAndHeight(median, height);
+                    beam.setManual(true);
+                    beam.setStaff(sorted.get(0).getStaff());
+                    newBeams.add(beam);
+
+                    final List<Link> beamLinks = new ArrayList<>();
+
+                    for (StemInter stem : stems) {
+                        final BeamStemRelation rel = new BeamStemRelation();
+                        rel.setManual(true);
+                        beamLinks.add(new Link(stem, rel, true));
+                    }
+
+                    seq.add(new AdditionTask(sig, beam, beam.getBounds(), beamLinks));
+                }
+
+                // One group embracing all new beams
+                newGroup.setManual(true);
+                newGroup.setStaff(sorted.get(0).getStaff());
+
+                final List<Link> groupLinks = new ArrayList<>();
+
+                for (BeamInter beam : newBeams) {
+                    groupLinks.add(new Link(beam, new Containment(), true));
+                }
+
+                final Rectangle groupBounds = Entities.getBounds(
+                        new ArrayList<Inter>(newBeams));
+                seq.add(new AdditionTask(sig, newGroup, groupBounds, groupLinks));
+
+                logger.debug("Beam {} chords with {} beam(s)", sorted.size(), beamCount);
+            }
+
+            @Override
+            protected void publish ()
+            {
+                for (BeamInter beam : newBeams) {
+                    sheet.getInterIndex().publish(beam);
+                }
+
+                sheet.getInterIndex().publish(newGroup);
+            }
+        }.execute();
+    }
+
+    //------------------//
+    // parallelizeBeams //
+    //------------------//
+    /**
+     * Make the selected beams parallel: all beams after the first one are moved
+     * to share the first beam slope, stacked below it by one interline each.
+     * This fixes crossed/overlapping double beams (e.g. two beams over the same
+     * 4 stems with opposite slopes).
+     * Fully undoable.
+     *
+     * @param beams the beams to parallelize (2 or more, same system)
+     */
+    @UIThread
+    public void parallelizeBeams (final List<AbstractBeamInter> beams)
+    {
+        new CtrlTask(DO, "parallelizeBeams")
+        {
+            @Override
+            protected void build ()
+            {
+                if (beams.size() < 2) {
+                    return;
+                }
+
+                final SIGraph sig = beams.get(0).getSig();
+                final List<AbstractBeamInter> sorted = new ArrayList<>(beams);
+                Collections.sort(sorted, Inters.byOrdinate);
+
+                final AbstractBeamInter ref = sorted.get(0);
+                final Line2D refMedian = ref.getMedian();
+                final double slope = (refMedian.getY2() - refMedian.getY1()) / (refMedian.getX2()
+                        - refMedian.getX1());
+                final double gap = sheet.getScale().getInterline();
+
+                for (int i = 1; i < sorted.size(); i++) {
+                    final AbstractBeamInter beam = sorted.get(i);
+                    final Line2D med = beam.getMedian();
+                    final double x1 = med.getX1();
+                    final double x2 = med.getX2();
+                    // Reference y at same abscissae, then stack below by i gaps
+                    final double refY1 = refMedian.getY1() + slope * (x1 - refMedian.getX1());
+                    final double refY2 = refMedian.getY1() + slope * (x2 - refMedian.getX1());
+                    final Point2D p1 = new Point2D.Double(x1, refY1 + i * gap);
+                    final Point2D p2 = new Point2D.Double(x2, refY2 + i * gap);
+
+                    seq.add(new BeamMoveTask(sig, beam, p1, p2));
+                }
+            }
+
+            @Override
+            protected void publish ()
+            {
+                for (AbstractBeamInter beam : beams) {
+                    sheet.getInterIndex().publish(beam);
+                }
+            }
+        }.execute();
+    }
+
     //-------------//
     // mergeSystem //
     //-------------//
@@ -2371,6 +2541,62 @@ public class InterController
     }
 
     //~ Inner Classes ------------------------------------------------------------------------------
+
+    //--------------//
+    // BeamMoveTask //
+    //--------------//
+    /**
+     * Move a beam median line (for manual "make parallel" fix).
+     * Undoable: restores the original end points.
+     */
+    private static class BeamMoveTask
+            extends UITask
+    {
+        private final AbstractBeamInter beam;
+
+        private final Point2D oldP1;
+
+        private final Point2D oldP2;
+
+        private final Point2D newP1;
+
+        private final Point2D newP2;
+
+        BeamMoveTask (SIGraph sig,
+                      AbstractBeamInter beam,
+                      Point2D newP1,
+                      Point2D newP2)
+        {
+            super(sig, "beamMove");
+            this.beam = beam;
+
+            final Line2D med = beam.getMedian();
+            this.oldP1 = new Point2D.Double(med.getX1(), med.getY1());
+            this.oldP2 = new Point2D.Double(med.getX2(), med.getY2());
+            this.newP1 = newP1;
+            this.newP2 = newP2;
+        }
+
+        @Override
+        public void performDo ()
+        {
+            beam.setMedianLine(newP1, newP2);
+            beam.setManual(true);
+            publish(beam);
+        }
+
+        @Override
+        public void performUndo ()
+        {
+            beam.setMedianLine(oldP1, oldP2);
+            publish(beam);
+        }
+
+        private void publish (Inter inter)
+        {
+            inter.getSig().getSystem().getSheet().getInterIndex().publish(inter);
+        }
+    }
 
     //-----------//
     // Constants //

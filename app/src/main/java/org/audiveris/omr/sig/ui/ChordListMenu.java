@@ -182,6 +182,49 @@ public class ChordListMenu
     }
 
     //----------------//
+    // buildBeamItem //
+    //----------------//
+    /**
+     * Try to build beam creation item(s).
+     * <p>
+     * We check that the provided chords:
+     * <ul>
+     * <li>Are all head-chords.
+     * <li>Belong to a single measure.
+     * <li>Each has a stem.
+     * </ul>
+     *
+     * @param chords   the selected chords, 2 or more
+     * @param listener the selection listener to use
+     */
+    private void buildBeamItem (final List<AbstractChordInter> chords,
+                                final SelectionListener listener)
+    {
+        final List<HeadChordInter> headChords = new ArrayList<>();
+
+        if (!checkHeadChords(chords, headChords)) {
+            return;
+        }
+
+        if (!checkSingleMeasure(headChords)) {
+            logger.debug("Chords of different measures: {}", headChords);
+
+            return;
+        }
+
+        for (HeadChordInter ch : headChords) {
+            if (ch.getStem() == null) {
+                logger.debug("Chord with no stem for a beam: {}", ch);
+
+                return;
+            }
+        }
+
+        addItem(new JMenuItem(new BeamAction(headChords, 1)), listener);
+        addItem(new JMenuItem(new BeamAction(headChords, 2)), listener);
+    }
+
+    //----------------//
     // buildSplitItem //
     //----------------//
     /**
@@ -742,6 +785,7 @@ public class ChordListMenu
 
                         case 2 -> {
                             buildMergeItem(sysChords, listener);
+                            buildBeamItem(sysChords, listener);
                             buildVoiceItems(sysChords, listener);
                             buildTimeItems(sysChords, listener);
                         }
@@ -749,6 +793,7 @@ public class ChordListMenu
                         default -> {
                             // 3 and above
                             buildMergeItem(sysChords, listener);
+                            buildBeamItem(sysChords, listener);
                             buildTimeItems(sysChords, listener);
                         }
                     }
@@ -822,10 +867,40 @@ public class ChordListMenu
                 "Maximum abscissa overlap between chords bounds for a voice menu item");
     }
 
+    //------------//
+    // BeamAction //
+    //------------//
+    private class BeamAction
+            extends AbstractAction
+    {
+        private final List<HeadChordInter> chords;
+
+        private final int beamCount;
+
+        BeamAction (List<HeadChordInter> chords,
+                    int beamCount)
+        {
+            super(beamCount == 1 ? "Beam together (1 beam)"
+                    : "Beam together (2 beams)");
+            putValue(
+                    Action.SHORT_DESCRIPTION,
+                    "Create manual beam(s) over the selected chords");
+
+            this.chords = chords;
+            this.beamCount = beamCount;
+        }
+
+        @Override
+        public void actionPerformed (ActionEvent e)
+        {
+            logger.debug("Beaming {} with {} beam(s)", chords, beamCount);
+            sheet.getInterController().beamChords(chords, beamCount);
+        }
+    }
+
     //-------------//
     // MergeAction //
-    //-------------//
-    private class MergeAction
+    //-------------//    private class MergeAction
             extends AbstractAction
     {
         private final List<HeadChordInter> chords;

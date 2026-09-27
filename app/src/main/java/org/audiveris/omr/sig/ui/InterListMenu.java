@@ -26,6 +26,7 @@ import org.audiveris.omr.glyph.Shape;
 import org.audiveris.omr.sheet.Sheet;
 import org.audiveris.omr.sheet.SystemInfo;
 import org.audiveris.omr.sig.SIGraph;
+import org.audiveris.omr.sig.inter.AbstractBeamInter;
 import org.audiveris.omr.sig.inter.Inter;
 import org.audiveris.omr.sig.inter.Inters;
 import org.audiveris.omr.sig.inter.KeyInter;
@@ -95,8 +96,7 @@ public class InterListMenu
 
     //--------------------//
     // insertDeletionItem //
-    //--------------------//
-    private void insertDeletionItem (final SystemInfo system,
+    //--------------------//    private void insertDeletionItem (final SystemInfo system,
                                      final List<Inter> sysInters)
     {
         final JMenuItem item = new JMenuItem(
@@ -162,6 +162,55 @@ public class InterListMenu
         this.addSeparator();
     }
 
+    //-----------------------//
+    // insertParallelizeItem //
+    //-----------------------//
+    /**
+     * Insert a menu item to make the selected beams parallel.
+     * Used to fix crossed/overlapping double beams.
+     *
+     * @param system    the related system
+     * @param sysInters the selected inters
+     */
+    private void insertParallelizeItem (final SystemInfo system,
+                                        final List<Inter> sysInters)
+    {
+        final List<AbstractBeamInter> beams = new ArrayList<>();
+
+        for (Inter inter : sysInters) {
+            if ((inter instanceof AbstractBeamInter) && !inter.isRemoved()) {
+                beams.add((AbstractBeamInter) inter);
+            }
+        }
+
+        if (beams.size() < 2) {
+            return;
+        }
+
+        final JMenuItem item = new JMenuItem(
+                "Make " + beams.size() + " beams parallel (fix crossing)");
+
+        item.addActionListener( (ActionEvent e) -> {
+            sheet.getInterController().parallelizeBeams(beams);
+        });
+
+        item.addMouseListener(new AbstractMouseListener()
+        {
+            @Override
+            public void mouseEntered (MouseEvent e)
+            {
+                system.getSheet().getInterIndex().getEntityService().publish(
+                        new EntityListEvent<>(
+                                this,
+                                SelectionHint.ENTITY_INIT,
+                                MouseMovement.PRESSING,
+                                new ArrayList<Inter>(beams)));
+            }
+        });
+        this.add(item);
+        this.addSeparator();
+    }
+
     //------------//
     // updateMenu //
     //------------//
@@ -217,6 +266,9 @@ public class InterListMenu
 
                     // Deleting inters?
                     insertDeletionItem(system, sysInters);
+
+                    // Parallelize beams?
+                    insertParallelizeItem(system, sysInters);
 
                     // One item per inter
                     for (Inter inter : sysInters) {
