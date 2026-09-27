@@ -22,7 +22,9 @@
 package org.audiveris.omr.util;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.FileSystem;
+import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,8 +107,18 @@ public abstract class ZipFileSystem
         Objects.requireNonNull(path, "ZipFileSystem.open: path is null");
 
         final Map<String, String> env = new HashMap<>(); // Empty map
-        final FileSystem fs = FileSystems.newFileSystem(path, env);
 
-        return fs.getPath(fs.getSeparator());
+        try {
+            final FileSystem fs = FileSystems.newFileSystem(path, env);
+
+            return fs.getPath(fs.getSeparator());
+        } catch (FileSystemAlreadyExistsException ex) {
+            // Book file system is already open (e.g. sheet reload),
+            // reuse the existing one instead of failing.
+            final URI uri = URI.create("jar:" + path.toUri());
+            final FileSystem fs = FileSystems.getFileSystem(uri);
+
+            return fs.getPath(fs.getSeparator());
+        }
     }
 }

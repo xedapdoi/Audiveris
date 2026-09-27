@@ -75,7 +75,9 @@ import org.slf4j.LoggerFactory;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.file.FileSystem;
+import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -3049,9 +3051,17 @@ public class Book
         try {
             logger.debug("Book file system opened");
 
-            FileSystem fileSystem = FileSystems.newFileSystem(bookPath, (ClassLoader) null);
+            try {
+                FileSystem fileSystem = FileSystems.newFileSystem(bookPath, (ClassLoader) null);
 
-            return fileSystem.getPath(fileSystem.getSeparator());
+                return fileSystem.getPath(fileSystem.getSeparator());
+            } catch (FileSystemAlreadyExistsException ex) {
+                // Already open (e.g. reload of the same book), reuse it.
+                final URI uri = URI.create("jar:" + bookPath.toUri());
+                FileSystem fileSystem = FileSystems.getFileSystem(uri);
+
+                return fileSystem.getPath(fileSystem.getSeparator());
+            }
         } catch (FileNotFoundException ex) {
             logger.warn("File not found: " + bookPath, ex);
         } catch (IOException ex) {
