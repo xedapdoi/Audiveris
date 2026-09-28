@@ -31,6 +31,8 @@ import org.audiveris.omr.constant.ConstantSet;
 import org.audiveris.omr.image.FilterParam;
 import org.audiveris.omr.image.ImageLoading;
 import org.audiveris.omr.log.LogUtil;
+import org.audiveris.omr.score.MidiAbstractions;
+import org.audiveris.omr.score.MidiExporter;
 import org.audiveris.omr.score.OpusExporter;
 import org.audiveris.omr.score.Page;
 import org.audiveris.omr.score.PageNumber;
@@ -638,6 +640,24 @@ public class Book
             } catch (Exception ex) {
                 logger.warn("Could not export opus " + opusPath, ex);
             }
+
+            // MIDI sidecars, one per movement score
+            final Map<Score, Path> scoreMap = getScoreExportPaths(theScores);
+
+            for (Entry<Score, Path> entry : scoreMap.entrySet()) {
+                final Score score = entry.getKey();
+                final Path scorePath = entry.getValue();
+
+                try {
+                    final String scoreFileName = scorePath.getFileName().toString();
+                    final int dot = scoreFileName.lastIndexOf('.');
+                    final String midiFileName = ((dot >= 0) ? scoreFileName.substring(0, dot)
+                            : scoreFileName) + MidiAbstractions.MIDI_EXTENSION;
+                    new MidiExporter(score).export(scorePath.resolveSibling(midiFileName));
+                } catch (Exception ex) {
+                    logger.warn("Could not export MIDI for score " + score.getId(), ex);
+                }
+            }
         } else {
             // Export the book as one or several movement files
             final Map<Score, Path> scoreMap = getScoreExportPaths(theScores);
@@ -653,6 +673,17 @@ public class Book
                     new ScoreExporter(score).export(scorePath, scoreName, sig, compressed);
                 } catch (Exception ex) {
                     logger.warn("Could not export score " + scoreName, ex);
+                }
+
+                // MIDI sidecar (same basename, .mid extension)
+                try {
+                    final String scoreFileName = scorePath.getFileName().toString();
+                    final int dot = scoreFileName.lastIndexOf('.');
+                    final String midiFileName = ((dot >= 0) ? scoreFileName.substring(0, dot)
+                            : scoreFileName) + MidiAbstractions.MIDI_EXTENSION;
+                    new MidiExporter(score).export(scorePath.resolveSibling(midiFileName));
+                } catch (Exception ex) {
+                    logger.warn("Could not export MIDI for score " + scoreName, ex);
                 }
             }
         }
