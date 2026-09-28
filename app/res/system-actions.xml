@@ -100,6 +100,9 @@
 
     <action domain="PLUGIN" section="10" class="org.audiveris.omr.sheet.ui.BookActions" method="invokeDefaultPlugin" button="javax.swing.JButton" />
 
+    <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="playScore" button="javax.swing.JButton" />
+    <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="stopScore" button="javax.swing.JButton" />
+
     <action domain="DEBUG" section="30" class="org.audiveris.omr.sheet.ui.BookActions" method="browseBook"          topic="DEBUG"/>
     <action domain="DEBUG" section="50" class="org.audiveris.omr.ui.GuiActions"        method="clearLog"            topic="DEBUG"   button="javax.swing.JButton"/>
     <action domain="DEBUG" section="60" class="org.audiveris.omr.ui.GuiActions"        method="launchSymbolRipper"  topic="DEBUG"/>

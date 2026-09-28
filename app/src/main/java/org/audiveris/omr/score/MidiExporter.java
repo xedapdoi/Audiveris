@@ -192,6 +192,7 @@ public class MidiExporter
         long cursor = cursors.get(logicalId);
         Integer fifths = null; // Running key signature
         final List<NoteEvent> events = new ArrayList<>();
+        final List<Marker> markers = new ArrayList<>();
 
         for (Measure measure : part.getMeasures()) {
             // Key signature tracking (global case is enough for MIDI pitch)
@@ -256,6 +257,9 @@ public class MidiExporter
                             events.add(new NoteEvent(pitch, onTick + durTicks, false));
                         }
                     }
+
+                    // Chord marker for playback highlight sync ("chord=<id>")
+                    markers.add(new Marker(chord.getId(), onTick));
                 }
             }
 
@@ -289,6 +293,10 @@ public class MidiExporter
             } else {
                 addNoteOff(track, event.tick, channel, event.pitch);
             }
+        }
+
+        for (Marker marker : markers) {
+            addMarker(track, marker.tick, "chord=" + marker.chordId);
         }
     }
 
@@ -405,6 +413,21 @@ public class MidiExporter
     }
 
     //-----------//
+    // addMarker //
+    //-----------//
+    /**
+     * Add a marker meta event (for playback highlight sync).
+     */
+    private static void addMarker (Track track,
+                                   long tick,
+                                   String text)
+        throws Exception
+    {
+        final byte[] data = text.getBytes("UTF-8");
+        track.add(new MidiEvent(new MetaMessage(0x06, data, data.length), tick));
+    }
+
+    //-----------//
     // addNoteOn //
     //-----------//
     private static void addNoteOn (Track track,
@@ -436,6 +459,24 @@ public class MidiExporter
     }
 
     //~ Inner Classes ------------------------------------------------------------------------------
+
+    //--------//
+    // Marker //
+    //--------//
+    /** Chord marker for playback highlight sync. */
+    private static class Marker
+    {
+        final int chordId;
+
+        final long tick;
+
+        Marker (int chordId,
+                long tick)
+        {
+            this.chordId = chordId;
+            this.tick = tick;
+        }
+    }
 
     //-----------//
     // NoteEvent //
