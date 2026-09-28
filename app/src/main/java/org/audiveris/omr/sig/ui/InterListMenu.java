@@ -96,7 +96,8 @@ public class InterListMenu
 
     //--------------------//
     // insertDeletionItem //
-    //--------------------//    private void insertDeletionItem (final SystemInfo system,
+    //--------------------//
+    private void insertDeletionItem (final SystemInfo system,
                                      final List<Inter> sysInters)
     {
         final JMenuItem item = new JMenuItem(

@@ -900,7 +900,8 @@ public class ChordListMenu
 
     //-------------//
     // MergeAction //
-    //-------------//    private class MergeAction
+    //-------------//
+    private class MergeAction
             extends AbstractAction
     {
         private final List<HeadChordInter> chords;
