@@ -100,6 +100,7 @@
 
     <action domain="PLUGIN" section="10" class="org.audiveris.omr.sheet.ui.BookActions" method="invokeDefaultPlugin" button="javax.swing.JButton" />
 
+    <action domain="MIDI" section="05" class="org.audiveris.omr.score.ui.MidiActions" method="showDigitalSheet" button="javax.swing.JButton" />
     <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="playPauseScore" button="javax.swing.JButton" />
     <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="stopScore" button="javax.swing.JButton" />
     <action domain="MIDI" section="15" class="org.audiveris.omr.score.ui.MidiActions" method="exportMp3" button="javax.swing.JButton" />

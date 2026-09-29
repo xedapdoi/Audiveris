@@ -210,6 +210,29 @@ public class MidiActions
         }
     }
 
+    //--------------------//
+    // showDigitalSheet //
+    //--------------------//
+    /**
+     * Open the clean digital sheet preview of the current book, with
+     * Play/Stop reusing the score player.
+     *
+     * @param e the event that triggered this action
+     */
+    @Action
+    public void showDigitalSheet (ActionEvent e)
+    {
+        final Book book = StubsController.getCurrentBook();
+
+        if (book == null || book.getScores().isEmpty()) {
+            logger.warn("No scored book to preview");
+            return;
+        }
+
+        final DigitalSheetFrame frame = new DigitalSheetFrame(book);
+        frame.setVisible(true);
+    }
+
     //-------------------//
     // togglePlayhead //
     //-------------------//

@@ -111,6 +111,20 @@ public class Main
         return cli;
     }
 
+    //-----------------//
+    // initHeadlessCli //
+    //-----------------//
+    /**
+     * Initialize a default CLI (no arguments parsed) for CLI-less contexts
+     * such as the REST microservice, where book code still queries CLI defaults.
+     */
+    public static void initHeadlessCli ()
+    {
+        if (cli == null) {
+            cli = new CLI(WellKnowns.TOOL_NAME);
+        }
+    }
+
     //-----------//
     // getLocale //
     //-----------//

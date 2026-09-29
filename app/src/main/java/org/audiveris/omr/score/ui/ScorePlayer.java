@@ -49,6 +49,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 import javax.sound.midi.MidiSystem;
 import javax.sound.midi.Receiver;
@@ -98,6 +100,9 @@ public class ScorePlayer
 
     /** Rubber currently showing the playhead, if any. */
     private Rubber playheadRubber;
+
+    /** Listeners notified of each sounding chord (preview playhead). */
+    private final List<Consumer<AbstractChordInter>> chordListeners = new CopyOnWriteArrayList<>();
 
     //~ Constructors -------------------------------------------------------------------------------
 
@@ -218,6 +223,32 @@ public class ScorePlayer
         if (!shown) {
             hidePlayhead();
         }
+    }
+
+    //--------------------//
+    // addChordListener //
+    //--------------------//
+    /**
+     * Register a listener notified of each sounding chord.
+     *
+     * @param listener listener to add
+     */
+    public void addChordListener (Consumer<AbstractChordInter> listener)
+    {
+        chordListeners.add(listener);
+    }
+
+    //-----------------------//
+    // removeChordListener //
+    //-----------------------//
+    /**
+     * Unregister a chord listener.
+     *
+     * @param listener listener to remove
+     */
+    public void removeChordListener (Consumer<AbstractChordInter> listener)
+    {
+        chordListeners.remove(listener);
     }
 
     //------//
@@ -601,6 +632,14 @@ public class ScorePlayer
         }
 
         SwingUtilities.invokeLater(() -> {
+            for (Consumer<AbstractChordInter> listener : chordListeners) {
+                try {
+                    listener.accept(chord);
+                } catch (Exception ex) {
+                    logger.debug("Chord listener failed", ex);
+                }
+            }
+
             try {
                 final SystemInfo system = chord.getSig().getSystem();
                 final List<Part> parts = system.getParts();
