@@ -213,7 +213,8 @@ public class MidiExporter
             }
         }
 
-        // Walk the play order ONCE; every part track advances in lockstep
+        // Walk the play order ONCE; every staff track advances in lockstep,
+        // sounding or silent, so staves never drift apart
         for (MeasureStack stack : playOrder) {
             final SystemInfo system = stack.getSystem();
             final Map<Part, Measure> partMap = scoreMap.get(stack);
@@ -221,6 +222,8 @@ public class MidiExporter
             if (system == null || partMap == null) {
                 continue;
             }
+
+            final long advance = expectedTicks(stack);
 
             for (Part part : system.getParts()) {
                 final LogicalPart logical = part.getLogicalPart();
@@ -231,18 +234,12 @@ public class MidiExporter
                         ? logical.getMidiProgram() : 0;
                 final Measure measure = partMap.get(part);
 
-                if (measure == null) {
-                    // Part has no measure here: advance its tracks silently
-                    advanceSilent(logicalId, stack, part, cursors);
+                // Per-staff dispatch within the measure (empty when missing)
+                final Map<Integer, List<VoiceEntry>> byStaff = (measure != null)
+                        ? dispatchByStaff(measure) : Collections.emptyMap();
+                final int staffCount = Math.max(1, part.getStaves().size());
 
-                    continue;
-                }
-
-                // Per-staff dispatch within the measure
-                final Map<Integer, List<VoiceEntry>> byStaff = dispatchByStaff(measure);
-
-                for (Map.Entry<Integer, List<VoiceEntry>> entry : byStaff.entrySet()) {
-                    final int staffIndex = entry.getKey();
+                for (int staffIndex = 0; staffIndex < staffCount; staffIndex++) {
                     final String trackKey = logicalId + ":" + staffIndex;
                     Track track = tracks.get(trackKey);
 
@@ -273,14 +270,21 @@ public class MidiExporter
                         addProgramChange(track, 0, channels.get(trackKey), program);
                     }
 
-                    exportEntries(
-                            measure,
-                            entry.getValue(),
-                            track,
-                            channels.get(trackKey),
-                            cursors,
-                            timeSigs,
-                            trackKey);
+                    final long startTick = cursors.get(trackKey);
+                    final List<VoiceEntry> entries = byStaff.get(staffIndex);
+
+                    if (entries != null && measure != null) {
+                        exportEntries(
+                                measure,
+                                entries,
+                                track,
+                                channels.get(trackKey),
+                                startTick,
+                                timeSigs,
+                                trackKey);
+                    }
+
+                    cursors.put(trackKey, startTick + advance);
                 }
             }
         }
@@ -326,34 +330,24 @@ public class MidiExporter
     }
 
     //----------------//
-    // advanceSilent //
+    // expectedTicks //
     //----------------//
     /**
-     * Advance the cursors of a part whose measure is missing for a stack.
+     * Report the expected duration of a stack in ticks.
      */
-    private static void advanceSilent (int logicalId,
-                                       MeasureStack stack,
-                                       Part part,
-                                       Map<String, Long> cursors)
+    private static long expectedTicks (MeasureStack stack)
     {
-        long advance = toTicks(Rational.ONE);
-
         try {
             final Rational expected = stack.getExpectedDuration();
 
             if (expected != null && expected.doubleValue() > 0) {
-                advance = toTicks(expected);
+                return toTicks(expected);
             }
         } catch (Exception ex) {
             logger.debug("No expected duration, using whole note", ex);
         }
 
-        final int staffCount = Math.max(1, part.getStaves().size());
-
-        for (int index = 0; index < staffCount; index++) {
-            final String trackKey = logicalId + ":" + index;
-            cursors.put(trackKey, cursors.getOrDefault(trackKey, 0L) + advance);
-        }
+        return toTicks(Rational.ONE);
     }
 
     //--------------//
@@ -495,18 +489,20 @@ public class MidiExporter
     // exportEntries //
     //---------------//
     /**
-     * Export the entries of one staff within one measure.
+     * Export the entries of one staff within one measure, starting at the
+     * provided tick. Cursor advancement is handled by the caller so that all
+     * staff tracks stay in lockstep.
      */
     private void exportEntries (Measure measure,
                                 List<VoiceEntry> entries,
                                 Track track,
                                 int channel,
-                                Map<String, Long> cursors,
+                                long startTick,
                                 Map<String, int[]> timeSigs,
                                 String trackKey)
         throws Exception
     {
-        final long cursor = cursors.get(trackKey);
+        final long cursor = startTick;
 
         // Time signature tracking
         final AbstractTimeInter timeSig = measure.getTimeSignature();
@@ -587,25 +583,7 @@ public class MidiExporter
             chordTicks.putIfAbsent(chord.getId(), onTick);
         }
 
-        // Advance by expected measure duration (keeps later measures aligned
-        // even when a voice is incomplete)
-        Rational expected = null;
-
-        try {
-            expected = measure.getStack().getExpectedDuration();
-        } catch (Exception ex) {
-            logger.debug("No expected duration for {}", measure, ex);
-        }
-
-        final long advance;
-
-        if (expected != null && expected.doubleValue() > 0) {
-            advance = toTicks(expected);
-        } else {
-            advance = toTicks(Rational.ONE); // Fallback: whole note
-        }
-
-        cursors.put(trackKey, cursor + advance);
+        // Advance is handled by the caller (all tracks in lockstep)
 
         // Emit note events ordered by tick (offs before ons at equal ticks)
         events.sort((a,
