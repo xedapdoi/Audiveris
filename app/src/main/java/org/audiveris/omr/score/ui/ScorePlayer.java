@@ -31,16 +31,15 @@ import org.audiveris.omr.sheet.SystemInfo;
 import org.audiveris.omr.sheet.rhythm.Measure;
 import org.audiveris.omr.sheet.rhythm.Voice;
 import org.audiveris.omr.sig.inter.AbstractChordInter;
-import org.audiveris.omr.ui.selection.EntityListEvent;
-import org.audiveris.omr.ui.selection.MouseMovement;
-import org.audiveris.omr.ui.selection.SelectionHint;
+import org.audiveris.omr.ui.view.Rubber;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.awt.Point;
+import java.awt.Rectangle;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -78,8 +77,11 @@ public class ScorePlayer
 
     private Synthesizer synthesizer;
 
-    /** Chord id -> chord, for highlight sync. */
+    /** Chord id -> chord, for playhead sync. */
     private final Map<Integer, AbstractChordInter> chords = new TreeMap<>();
+
+    /** Rubber currently showing the playhead, if any. */
+    private Rubber playheadRubber;
 
     private Book book;
 
@@ -198,7 +200,7 @@ public class ScorePlayer
     // stop //
     //------//
     /**
-     * Stop any running playback and release MIDI resources.
+     * Stop any running playback, hide the playhead and release MIDI resources.
      */
     public synchronized void stop ()
     {
@@ -226,6 +228,7 @@ public class ScorePlayer
             }
         }
 
+        hidePlayhead();
         chords.clear();
         book = null;
     }
@@ -234,7 +237,8 @@ public class ScorePlayer
     // highlight //
     //-----------//
     /**
-     * Highlight the chord with the provided id in its sheet view.
+     * Move the playback playhead line to the chord with the provided id.
+     * Unlike entity selection, the playhead does not disturb the user selection.
      *
      * @param id chord id
      */
@@ -249,16 +253,42 @@ public class ScorePlayer
         SwingUtilities.invokeLater(() -> {
             try {
                 final Sheet sheet = chord.getSig().getSystem().getSheet();
-                sheet.getInterIndex().getEntityService().publish(
-                        new EntityListEvent<>(
-                                this,
-                                SelectionHint.ENTITY_INIT,
-                                MouseMovement.PRESSING,
-                                List.of(chord)));
+                final Rubber rubber = sheet.getStub().getAssembly().getRubber();
+                final Point center = chord.getCenter();
+                final Rectangle systemBox = chord.getSig().getSystem().getBounds();
+                rubber.showPlayhead(
+                        new Rectangle(center.x - 1, systemBox.y, 3, systemBox.height));
+                playheadRubber = rubber;
             } catch (Exception ex) {
-                logger.debug("Could not highlight chord {}", id, ex);
+                logger.debug("Could not move playhead to chord {}", id, ex);
             }
         });
+    }
+
+    //--------------//
+    // hidePlayhead //
+    //--------------//
+    /**
+     * Hide any playback playhead line.
+     */
+    private void hidePlayhead ()
+    {
+        final Rubber rubber = playheadRubber;
+        playheadRubber = null;
+
+        if (rubber == null) {
+            return;
+        }
+
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                rubber.hidePlayhead();
+            } else {
+                SwingUtilities.invokeLater(rubber::hidePlayhead);
+            }
+        } catch (Exception ex) {
+            logger.debug("Could not hide playhead", ex);
+        }
     }
 
     //--------------//

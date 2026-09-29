@@ -21,23 +21,32 @@
 // </editor-fold>
 package org.audiveris.omr.score;
 
+import org.audiveris.omr.constant.Constant;
+import org.audiveris.omr.constant.ConstantSet;
 import org.audiveris.omr.math.Rational;
 import org.audiveris.omr.sheet.Part;
+import org.audiveris.omr.sheet.Staff;
 import org.audiveris.omr.sheet.SystemInfo;
 import org.audiveris.omr.sheet.rhythm.Measure;
 import org.audiveris.omr.sheet.rhythm.Voice;
+import org.audiveris.omr.sig.SIGraph;
 import org.audiveris.omr.sig.inter.AbstractChordInter;
 import org.audiveris.omr.sig.inter.AbstractTimeInter;
+import org.audiveris.omr.sig.inter.ClefInter;
 import org.audiveris.omr.sig.inter.HeadInter;
 import org.audiveris.omr.sig.inter.Inter;
+import org.audiveris.omr.sig.inter.Inters;
 import org.audiveris.omr.sig.inter.KeyInter;
+import org.audiveris.omr.sig.inter.MetronomeInter;
 import org.audiveris.omr.sig.inter.RestInter;
+import org.audiveris.omr.sig.relation.ChordArpeggiatoRelation;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -52,13 +61,17 @@ import javax.sound.midi.Track;
 /**
  * Class <code>MidiExporter</code> exports a {@link Score} to a standard MIDI file (.mid).
  * <p>
- * One MIDI track is created per logical part, plus a conductor track holding
- * the tempo. Note pitches reuse the same logic as the MusicXML exporter
- * ({@link HeadInter#getAlteration(Integer)} with the running key signature).
- * Durations come from {@link AbstractChordInter#getDuration()}, so tuplets and
- * augmentation dots are honored. Incomplete voices (rhythm warnings) are exported
- * as-is: chords are placed at their time offsets while measures advance by
- * expected duration, so later measures stay aligned.
+ * One MIDI track is created per (logical part, staff), plus a conductor track
+ * holding the tempo — staves (e.g. treble G vs bass F of a piano part) get
+ * separate channels so they sound independently. Note pitches reuse the same
+ * logic as the MusicXML exporter ({@link HeadInter#getAlteration(Integer)} with
+ * the running key signature). Durations come from
+ * {@link AbstractChordInter#getDuration()}, so tuplets and augmentation dots are
+ * honored. Chords carrying an arpeggiato sign are strummed bottom-up instead of
+ * sounding as a block. Tempo comes from the first metronome mark found, else
+ * from the {@code defaultTempoQpm} constant. Incomplete voices (rhythm warnings)
+ * are exported as-is: chords are placed at their time offsets while measures
+ * advance by expected duration, so later measures stay aligned.
  *
  * @author Audiveris contributors
  */
@@ -66,13 +79,15 @@ public class MidiExporter
 {
     //~ Static fields/initializers -----------------------------------------------------------------
 
+    private static final Constants constants = new Constants();
+
     private static final Logger logger = LoggerFactory.getLogger(MidiExporter.class);
 
     /** Ticks per quarter note. */
     public static final int PPQ = 480;
 
-    /** Default tempo (quarter notes per minute) when no metronome is found. */
-    public static final int DEFAULT_TEMPO_QPM = 120;
+    /** Strum gap between two notes of an arpeggiated chord, in milliseconds. */
+    private static final int STRUM_GAP_MS = 35;
 
     /** Default velocity. */
     private static final int VELOCITY = 80;
@@ -80,6 +95,9 @@ public class MidiExporter
     //~ Instance fields ----------------------------------------------------------------------------
 
     private final Score score;
+
+    /** Tempo actually used for the export (quarters per minute). */
+    private int tempoQpm;
 
     //~ Constructors -------------------------------------------------------------------------------
 
@@ -107,15 +125,19 @@ public class MidiExporter
     public void export (Path midiPath)
         throws Exception
     {
+        tempoQpm = findTempo();
+        logger.info("Exporting MIDI at {} qpm", tempoQpm);
+
         final Sequence sequence = new Sequence(Sequence.PPQ, PPQ);
         final Track conductor = sequence.createTrack();
-        addTempo(conductor, 0, DEFAULT_TEMPO_QPM);
+        addTempo(conductor, 0, tempoQpm);
 
-        // One track per logical part (stable across systems)
-        final Map<Integer, Track> tracks = new TreeMap<>();
-        final Map<Integer, Integer> channels = new TreeMap<>();
-        final Map<Integer, Long> cursors = new TreeMap<>();
-        final Map<Integer, int[]> timeSigs = new TreeMap<>(); // logicalId -> {num, den}
+        // One track per (logical part, staff index in part)
+        final Map<String, Track> tracks = new TreeMap<>();
+        final Map<String, Integer> channels = new TreeMap<>();
+        final Map<String, Long> cursors = new TreeMap<>();
+        final Map<String, int[]> timeSigs = new TreeMap<>(); // trackKey -> {num, den}
+        final Map<String, String> clefs = new TreeMap<>(); // trackKey -> G/F/C/?
         int channelAlloc = 0;
 
         for (Page page : score.getPages()) {
@@ -123,43 +145,58 @@ public class MidiExporter
                 for (Part part : system.getParts()) {
                     final LogicalPart logical = part.getLogicalPart();
                     final int logicalId = (logical != null) ? logical.getId() : part.getId();
+                    final String partName = (logical != null && logical.getName() != null)
+                            ? logical.getName() : ("Part " + logicalId);
+                    final int program = (logical != null && logical.getMidiProgram() != null)
+                            ? logical.getMidiProgram() : 0;
 
-                    Track track = tracks.get(logicalId);
+                    for (Measure measure : part.getMeasures()) {
+                        // Per-staff dispatch within the measure
+                        final Map<Integer, List<VoiceEntry>> byStaff = dispatchByStaff(
+                                measure);
 
-                    if (track == null) {
-                        track = sequence.createTrack();
-                        tracks.put(logicalId, track);
+                        for (Map.Entry<Integer, List<VoiceEntry>> entry : byStaff.entrySet()) {
+                            final int staffIndex = entry.getKey();
+                            final String trackKey = logicalId + ":" + staffIndex;
+                            Track track = tracks.get(trackKey);
 
-                        int channel = channelAlloc;
+                            if (track == null) {
+                                track = sequence.createTrack();
+                                tracks.put(trackKey, track);
 
-                        if (channel == 9) {
-                            channel = 10; // Skip percussion channel
+                                int channel = channelAlloc;
+
+                                if (channel == 9) {
+                                    channel = 10; // Skip percussion channel
+                                }
+
+                                channelAlloc = channel + 1;
+                                channels.put(trackKey, channel % 16);
+                                cursors.put(trackKey, 0L);
+
+                                final String clef = clefOf(
+                                        system,
+                                        measure,
+                                        staffIndex,
+                                        clefs,
+                                        trackKey);
+                                addTrackName(
+                                        track,
+                                        0,
+                                        partName + "-" + clef);
+                                addProgramChange(track, 0, channels.get(trackKey), program);
+                            }
+
+                            exportEntries(
+                                    measure,
+                                    entry.getValue(),
+                                    track,
+                                    channels.get(trackKey),
+                                    cursors,
+                                    timeSigs,
+                                    trackKey);
                         }
-
-                        channelAlloc = channel + 1;
-                        channels.put(logicalId, channel % 16);
-                        cursors.put(logicalId, 0L);
-
-                        final String partName = (logical != null && logical.getName() != null)
-                                ? logical.getName() : ("Part " + logicalId);
-                        addTrackName(track, 0, partName);
-
-                        int program = 0;
-
-                        if (logical != null && logical.getMidiProgram() != null) {
-                            program = logical.getMidiProgram();
-                        }
-
-                        addProgramChange(track, 0, channels.get(logicalId), program);
                     }
-
-                    exportPart(
-                            part,
-                            logicalId,
-                            track,
-                            channels.get(logicalId),
-                            cursors,
-                            timeSigs);
                 }
             }
         }
@@ -175,112 +212,235 @@ public class MidiExporter
         logger.info("Exported MIDI {}", midiPath);
     }
 
-    //------------//
-    // exportPart //
-    //------------//
+    //--------------//
+    // findTempo //
+    //--------------//
     /**
-     * Export all measures of a physical part into its logical track.
+     * Report the tempo to use: first metronome mark found in the score,
+     * else the default tempo constant.
+     *
+     * @return quarters per minute
      */
-    private void exportPart (Part part,
-                             int logicalId,
-                             Track track,
-                             int channel,
-                             Map<Integer, Long> cursors,
-                             Map<Integer, int[]> timeSigs)
-        throws Exception
+    private int findTempo ()
     {
-        long cursor = cursors.get(logicalId);
-        Integer fifths = null; // Running key signature
-        final List<NoteEvent> events = new ArrayList<>();
-        final List<Marker> markers = new ArrayList<>();
+        for (Page page : score.getPages()) {
+            for (SystemInfo system : page.getSystems()) {
+                final SIGraph sig = system.getSig();
+                final List<Inter> metros = sig.inters(MetronomeInter.class);
 
-        for (Measure measure : part.getMeasures()) {
-            // Key signature tracking (global case is enough for MIDI pitch)
-            if (measure.hasKeys()) {
-                try {
-                    final KeyInter key = measure.getKey(0);
+                if (!metros.isEmpty()) {
+                    for (Inter inter : metros) {
+                        try {
+                            final int qpm = ((MetronomeInter) inter).getQuartersPerMinute();
 
-                    if (key != null && key.getFifths() != null) {
-                        fifths = key.getFifths();
-                    }
-                } catch (Exception ex) {
-                    logger.debug("No usable key in {}", measure, ex);
-                }
-            }
+                            if (qpm > 0) {
+                                logger.info("Using metronome tempo {} qpm", qpm);
 
-            // Time signature tracking
-            final AbstractTimeInter timeSig = measure.getTimeSignature();
-
-            if (timeSig != null) {
-                final int num = timeSig.getNumerator();
-                final int den = timeSig.getDenominator();
-                final int[] current = timeSigs.get(logicalId);
-
-                if (current == null || current[0] != num || current[1] != den) {
-                    timeSigs.put(logicalId, new int[] { num, den });
-                    addTimeSignature(track, cursor, num, den);
-                }
-            }
-
-            for (Voice voice : measure.getVoices()) {
-                if (voice.isMeasureRest()) {
-                    continue; // Silence, cursor still advances by measure length
-                }
-
-                for (AbstractChordInter chord : voice.getChords()) {
-                    if (chord.isRest()) {
-                        continue;
-                    }
-
-                    final Rational onset = chord.getTimeOffset();
-                    final Rational duration = chord.getDuration();
-
-                    if (onset == null || duration == null) {
-                        continue;
-                    }
-
-                    final long onTick = cursor + toTicks(onset);
-                    final long durTicks = toTicks(duration);
-
-                    if (durTicks <= 0) {
-                        continue; // Grace note or invalid, skip sounding
-                    }
-
-                    for (Inter inter : chord.getNotes()) {
-                        if (inter instanceof RestInter) {
-                            continue;
-                        }
-
-                        if (inter instanceof HeadInter head) {
-                            final int pitch = toMidi(head, fifths);
-                            events.add(new NoteEvent(pitch, onTick, true));
-                            events.add(new NoteEvent(pitch, onTick + durTicks, false));
+                                return qpm;
+                            }
+                        } catch (Exception ex) {
+                            logger.debug("Unusable metronome {}", inter, ex);
                         }
                     }
-
-                    // Chord marker for playback highlight sync ("chord=<id>")
-                    markers.add(new Marker(chord.getId(), onTick));
                 }
-            }
-
-            // Advance by expected measure duration (keeps later measures aligned
-            // even when a voice is incomplete)
-            Rational expected = null;
-
-            try {
-                expected = measure.getStack().getExpectedDuration();
-            } catch (Exception ex) {
-                logger.debug("No expected duration for {}", measure, ex);
-            }
-
-            if (expected != null && expected.doubleValue() > 0) {
-                cursor += toTicks(expected);
-            } else {
-                cursor += toTicks(Rational.ONE); // Fallback: whole note
             }
         }
 
-        cursors.put(logicalId, cursor);
+        return constants.defaultTempoQpm.getValue();
+    }
+
+    //-----------------//
+    // dispatchByStaff //
+    //-----------------//
+    /**
+     * Group the sounding chords of a measure by staff index in part.
+     *
+     * @param measure the measure to dispatch
+     * @return map of staff index to voice entries
+     */
+    private static Map<Integer, List<VoiceEntry>> dispatchByStaff (Measure measure)
+    {
+        final Map<Integer, List<VoiceEntry>> map = new TreeMap<>();
+        Integer fifths = null;
+
+        if (measure.hasKeys()) {
+            try {
+                final KeyInter key = measure.getKey(0);
+
+                if (key != null && key.getFifths() != null) {
+                    fifths = key.getFifths();
+                }
+            } catch (Exception ex) {
+                logger.debug("No usable key in {}", measure, ex);
+            }
+        }
+
+        for (Voice voice : measure.getVoices()) {
+            if (voice.isMeasureRest()) {
+                continue;
+            }
+
+            for (AbstractChordInter chord : voice.getChords()) {
+                if (chord.isRest()) {
+                    continue;
+                }
+
+                final Staff staff = chord.getStaff();
+                final int index = (staff != null) ? staff.getIndexInPart() : 0;
+                map.computeIfAbsent(index, k -> new ArrayList<>()).add(
+                        new VoiceEntry(chord, fifths));
+            }
+        }
+
+        return map;
+    }
+
+    //---------//
+    // clefOf //
+    //---------//
+    /**
+     * Report the clef letter (G/F/C) for a staff track, caching the first
+     * clef found for the staff.
+     */
+    private static String clefOf (SystemInfo system,
+                                  Measure measure,
+                                  int staffIndex,
+                                  Map<String, String> cache,
+                                  String trackKey)
+    {
+        if (cache.containsKey(trackKey)) {
+            return cache.get(trackKey);
+        }
+
+        String letter = "S" + (staffIndex + 1);
+
+        try {
+            final List<Inter> clefs = system.getSig().inters(ClefInter.class);
+            Collections.sort(clefs, Inters.byAbscissa);
+
+            for (Inter inter : clefs) {
+                final ClefInter clef = (ClefInter) inter;
+
+                if (clef.getStaff() != null && clef.getStaff().getIndexInPart() == staffIndex) {
+                    final String name = clef.getShape().name();
+
+                    if (name.startsWith("G_")) {
+                        letter = "G";
+                    } else if (name.startsWith("F_")) {
+                        letter = "F";
+                    } else if (name.startsWith("C_")) {
+                        letter = "C";
+                    }
+
+                    break;
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("No clef found for {}", trackKey, ex);
+        }
+
+        cache.put(trackKey, letter);
+
+        return letter;
+    }
+
+    //---------------//
+    // exportEntries //
+    //---------------//
+    /**
+     * Export the entries of one staff within one measure.
+     */
+    private void exportEntries (Measure measure,
+                                List<VoiceEntry> entries,
+                                Track track,
+                                int channel,
+                                Map<String, Long> cursors,
+                                Map<String, int[]> timeSigs,
+                                String trackKey)
+        throws Exception
+    {
+        final long cursor = cursors.get(trackKey);
+
+        // Time signature tracking
+        final AbstractTimeInter timeSig = measure.getTimeSignature();
+
+        if (timeSig != null) {
+            final int num = timeSig.getNumerator();
+            final int den = timeSig.getDenominator();
+            final int[] current = timeSigs.get(trackKey);
+
+            if (current == null || current[0] != num || current[1] != den) {
+                timeSigs.put(trackKey, new int[] { num, den });
+                addTimeSignature(track, cursor, num, den);
+            }
+        }
+
+        final List<NoteEvent> events = new ArrayList<>();
+        final List<Marker> markers = new ArrayList<>();
+        final long strumTicks = Math.max(1, Math.round(STRUM_GAP_MS * tempoQpm * PPQ / 60000.0));
+
+        for (VoiceEntry entry : entries) {
+            final AbstractChordInter chord = entry.chord;
+            final Rational onset = chord.getTimeOffset();
+            final Rational duration = chord.getDuration();
+
+            if (onset == null || duration == null) {
+                continue;
+            }
+
+            final long onTick = cursor + toTicks(onset);
+            final long durTicks = toTicks(duration);
+
+            if (durTicks <= 0) {
+                continue; // Grace note or invalid, skip sounding
+            }
+
+            // Arpeggiated chord? Strum bottom-up instead of block.
+            final boolean arpeggiated = isArpeggiated(chord);
+            final List<Integer> pitches = new ArrayList<>();
+
+            for (Inter inter : chord.getNotes()) {
+                if (inter instanceof RestInter) {
+                    continue;
+                }
+
+                if (inter instanceof HeadInter head) {
+                    pitches.add(toMidi(head, entry.fifths));
+                }
+            }
+
+            Collections.sort(pitches);
+
+            for (int i = 0; i < pitches.size(); i++) {
+                final int pitch = pitches.get(i);
+                final long noteOn = arpeggiated ? (onTick + i * strumTicks) : onTick;
+                events.add(new NoteEvent(pitch, noteOn, true));
+                events.add(new NoteEvent(pitch, onTick + durTicks, false));
+            }
+
+            // Chord marker for playback highlight sync ("chord=<id>")
+            markers.add(new Marker(chord.getId(), onTick));
+        }
+
+        // Advance by expected measure duration (keeps later measures aligned
+        // even when a voice is incomplete)
+        Rational expected = null;
+
+        try {
+            expected = measure.getStack().getExpectedDuration();
+        } catch (Exception ex) {
+            logger.debug("No expected duration for {}", measure, ex);
+        }
+
+        final long advance;
+
+        if (expected != null && expected.doubleValue() > 0) {
+            advance = toTicks(expected);
+        } else {
+            advance = toTicks(Rational.ONE); // Fallback: whole note
+        }
+
+        cursors.put(trackKey, cursor + advance);
 
         // Emit note events ordered by tick (offs before ons at equal ticks)
         events.sort((a,
@@ -297,6 +457,21 @@ public class MidiExporter
 
         for (Marker marker : markers) {
             addMarker(track, marker.tick, "chord=" + marker.chordId);
+        }
+    }
+
+    //---------------//
+    // isArpeggiated //
+    //---------------//
+    /**
+     * Report whether the chord carries an arpeggiato sign.
+     */
+    private static boolean isArpeggiated (AbstractChordInter chord)
+    {
+        try {
+            return !chord.getSig().getRelations(chord, ChordArpeggiatoRelation.class).isEmpty();
+        } catch (Exception ex) {
+            return false;
         }
     }
 
@@ -460,6 +635,18 @@ public class MidiExporter
 
     //~ Inner Classes ------------------------------------------------------------------------------
 
+    //-----------//
+    // Constants //
+    //-----------//
+    private static class Constants
+            extends ConstantSet
+    {
+        private final Constant.Integer defaultTempoQpm = new Constant.Integer(
+                "qpm",
+                120,
+                "Default playback/export tempo when no metronome mark is found");
+    }
+
     //--------//
     // Marker //
     //--------//
@@ -497,6 +684,24 @@ public class MidiExporter
             this.pitch = pitch;
             this.tick = tick;
             this.on = on;
+        }
+    }
+
+    //------------//
+    // VoiceEntry //
+    //------------//
+    /** A sounding chord with its measure key signature. */
+    private static class VoiceEntry
+    {
+        final AbstractChordInter chord;
+
+        final Integer fifths;
+
+        VoiceEntry (AbstractChordInter chord,
+                    Integer fifths)
+        {
+            this.chord = chord;
+            this.fifths = fifths;
         }
     }
 }

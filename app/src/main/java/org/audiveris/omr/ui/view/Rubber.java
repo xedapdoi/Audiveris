@@ -764,6 +764,40 @@ public class Rubber
         }
     }
 
+    //--------------//
+    // showPlayhead //
+    //--------------//
+    /**
+     * Show a playback playhead line, programmatically.
+     * The rectangle is in model coordinates and is repainted at once.
+     * It does not disturb the entity selection.
+     *
+     * @param playRect the thin vertical rectangle to display
+     */
+    public void showPlayhead (Rectangle playRect)
+    {
+        resetRectangle(playRect);
+
+        if (component != null) {
+            component.repaint();
+        }
+    }
+
+    //--------------//
+    // hidePlayhead //
+    //--------------//
+    /**
+     * Hide any playback playhead line.
+     */
+    public void hidePlayhead ()
+    {
+        resetRectangle(null);
+
+        if (component != null) {
+            component.repaint();
+        }
+    }
+
     //--------//
     // scaled //
     //--------//
