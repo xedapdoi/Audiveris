@@ -28,6 +28,7 @@ import org.audiveris.omr.sheet.Part;
 import org.audiveris.omr.sheet.Staff;
 import org.audiveris.omr.sheet.SystemInfo;
 import org.audiveris.omr.sheet.rhythm.Measure;
+import org.audiveris.omr.sheet.rhythm.MeasureStack;
 import org.audiveris.omr.sheet.rhythm.Voice;
 import org.audiveris.omr.sig.SIGraph;
 import org.audiveris.omr.sig.inter.AbstractChordInter;
@@ -50,6 +51,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -192,68 +194,96 @@ public class MidiExporter
         final Map<String, String> clefs = new TreeMap<>(); // trackKey -> G/F/C/?
         int channelAlloc = 0;
 
+        // Play order with repeats expanded (volta-aware)
+        final List<MeasureStack> playOrder = RepeatExpander.expand(collectStacks());
+        logger.info("Play order: {} stacks ({} unique)", playOrder.size(), collectStacks().size());
+
+        // Stack -> (part -> measure) index for the whole score
+        final Map<MeasureStack, Map<Part, Measure>> scoreMap = new LinkedHashMap<>();
+
         for (Page page : score.getPages()) {
             for (SystemInfo system : page.getSystems()) {
                 for (Part part : system.getParts()) {
-                    final LogicalPart logical = part.getLogicalPart();
-                    final int logicalId = (logical != null) ? logical.getId() : part.getId();
-                    final String partName = (logical != null && logical.getName() != null)
-                            ? logical.getName() : ("Part " + logicalId);
-                    final int program = (logical != null && logical.getMidiProgram() != null)
-                            ? logical.getMidiProgram() : 0;
-
                     for (Measure measure : part.getMeasures()) {
-                        // Per-staff dispatch within the measure
-                        final Map<Integer, List<VoiceEntry>> byStaff = dispatchByStaff(
-                                measure);
-
-                        for (Map.Entry<Integer, List<VoiceEntry>> entry : byStaff.entrySet()) {
-                            final int staffIndex = entry.getKey();
-                            final String trackKey = logicalId + ":" + staffIndex;
-                            Track track = tracks.get(trackKey);
-
-                            if (track == null) {
-                                track = sequence.createTrack();
-                                tracks.put(trackKey, track);
-
-                                int channel = channelAlloc;
-
-                                if (channel == 9) {
-                                    channel = 10; // Skip percussion channel
-                                }
-
-                                channelAlloc = channel + 1;
-                                channels.put(trackKey, channel % 16);
-                                cursors.put(trackKey, 0L);
-
-                                final String clef = clefOf(
-                                        system,
-                                        measure,
-                                        staffIndex,
-                                        clefs,
-                                        trackKey);
-                                addTrackName(
-                                        track,
-                                        0,
-                                        partName + "-" + clef);
-                                addProgramChange(track, 0, channels.get(trackKey), program);
-                            }
-
-                            exportEntries(
-                                    measure,
-                                    entry.getValue(),
-                                    track,
-                                    channels.get(trackKey),
-                                    cursors,
-                                    timeSigs,
-                                    trackKey);
-                        }
+                        scoreMap
+                                .computeIfAbsent(measure.getStack(), s -> new LinkedHashMap<>())
+                                .put(part, measure);
                     }
                 }
             }
         }
 
-        conductor.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), 0));
+        // Walk the play order ONCE; every part track advances in lockstep
+        for (MeasureStack stack : playOrder) {
+            final SystemInfo system = stack.getSystem();
+            final Map<Part, Measure> partMap = scoreMap.get(stack);
+
+            if (system == null || partMap == null) {
+                continue;
+            }
+
+            for (Part part : system.getParts()) {
+                final LogicalPart logical = part.getLogicalPart();
+                final int logicalId = (logical != null) ? logical.getId() : part.getId();
+                final String partName = (logical != null && logical.getName() != null)
+                        ? logical.getName() : ("Part " + logicalId);
+                final int program = (logical != null && logical.getMidiProgram() != null)
+                        ? logical.getMidiProgram() : 0;
+                final Measure measure = partMap.get(part);
+
+                if (measure == null) {
+                    // Part has no measure here: advance its tracks silently
+                    advanceSilent(logicalId, stack, part, cursors);
+
+                    continue;
+                }
+
+                // Per-staff dispatch within the measure
+                final Map<Integer, List<VoiceEntry>> byStaff = dispatchByStaff(measure);
+
+                for (Map.Entry<Integer, List<VoiceEntry>> entry : byStaff.entrySet()) {
+                    final int staffIndex = entry.getKey();
+                    final String trackKey = logicalId + ":" + staffIndex;
+                    Track track = tracks.get(trackKey);
+
+                    if (track == null) {
+                        track = sequence.createTrack();
+                        tracks.put(trackKey, track);
+
+                        int channel = channelAlloc;
+
+                        if (channel == 9) {
+                            channel = 10; // Skip percussion channel
+                        }
+
+                        channelAlloc = channel + 1;
+                        channels.put(trackKey, channel % 16);
+                        cursors.putIfAbsent(trackKey, 0L);
+
+                        final String clef = clefOf(
+                                system,
+                                measure,
+                                staffIndex,
+                                clefs,
+                                trackKey);
+                        addTrackName(
+                                track,
+                                0,
+                                partName + "-" + clef);
+                        addProgramChange(track, 0, channels.get(trackKey), program);
+                    }
+
+                    exportEntries(
+                            measure,
+                            entry.getValue(),
+                            track,
+                            channels.get(trackKey),
+                            cursors,
+                            timeSigs,
+                            trackKey);
+                }
+            }
+        }
 
         for (Track track : tracks.values()) {
             track.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), lastTick(track)));
@@ -272,6 +302,58 @@ public class MidiExporter
         midiPath.toFile().getParentFile().mkdirs();
         MidiSystem.write(sequence, 1, midiPath.toFile());
         logger.info("Exported MIDI {}", midiPath);
+    }
+
+    //----------------//
+    // collectStacks //
+    //----------------//
+    /**
+     * Collect the measure stacks of the score in score order.
+     *
+     * @return ordered stacks
+     */
+    private List<MeasureStack> collectStacks ()
+    {
+        final List<MeasureStack> stacks = new ArrayList<>();
+
+        for (Page page : score.getPages()) {
+            for (SystemInfo system : page.getSystems()) {
+                stacks.addAll(system.getStacks());
+            }
+        }
+
+        return stacks;
+    }
+
+    //----------------//
+    // advanceSilent //
+    //----------------//
+    /**
+     * Advance the cursors of a part whose measure is missing for a stack.
+     */
+    private static void advanceSilent (int logicalId,
+                                       MeasureStack stack,
+                                       Part part,
+                                       Map<String, Long> cursors)
+    {
+        long advance = toTicks(Rational.ONE);
+
+        try {
+            final Rational expected = stack.getExpectedDuration();
+
+            if (expected != null && expected.doubleValue() > 0) {
+                advance = toTicks(expected);
+            }
+        } catch (Exception ex) {
+            logger.debug("No expected duration, using whole note", ex);
+        }
+
+        final int staffCount = Math.max(1, part.getStaves().size());
+
+        for (int index = 0; index < staffCount; index++) {
+            final String trackKey = logicalId + ":" + index;
+            cursors.put(trackKey, cursors.getOrDefault(trackKey, 0L) + advance);
+        }
     }
 
     //--------------//
@@ -502,7 +584,7 @@ public class MidiExporter
 
             // Chord marker for playback highlight sync ("chord=<id>")
             markers.add(new Marker(chord.getId(), onTick));
-            chordTicks.put(chord.getId(), onTick);
+            chordTicks.putIfAbsent(chord.getId(), onTick);
         }
 
         // Advance by expected measure duration (keeps later measures aligned
