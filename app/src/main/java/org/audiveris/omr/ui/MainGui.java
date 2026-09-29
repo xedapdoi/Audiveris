@@ -32,6 +32,7 @@ import org.audiveris.omr.log.LogPane;
 import org.audiveris.omr.log.LogUtil;
 import org.audiveris.omr.plugin.PluginsManager;
 import org.audiveris.omr.score.PartwiseBuilder;
+import org.audiveris.omr.score.ui.TempoBox;
 import org.audiveris.omr.sheet.Book;
 import org.audiveris.omr.sheet.SheetStub;
 import org.audiveris.omr.sheet.Versions;
@@ -190,7 +191,11 @@ public class MainGui
         toolBarPanel.add(ActionManager.getInstance().getToolBar(), BorderLayout.CENTER);
 
         final JPanel gauges = new JPanel(new BorderLayout(UIUtil.adjustedSize(8), 0));
-        gauges.add(SheetPainter.getVoicePanel(), BorderLayout.WEST);
+        final JPanel westGauges = new JPanel(new BorderLayout(UIUtil.adjustedSize(8), 0));
+        westGauges.add(TempoBox.getComponent(), BorderLayout.WEST);
+        westGauges.add(SheetPainter.getVoicePanel(), BorderLayout.CENTER);
+        UIUtil.suppressBorders(westGauges);
+        gauges.add(westGauges, BorderLayout.WEST);
         gauges.add(StepMonitoring.createMonitor().getComponent(), BorderLayout.CENTER);
         gauges.add(new MemoryMeter().getComponent(), BorderLayout.EAST);
         UIUtil.suppressBorders(gauges);

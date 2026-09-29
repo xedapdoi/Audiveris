@@ -21,15 +21,19 @@
 // </editor-fold>
 package org.audiveris.omr.score.ui;
 
+import org.audiveris.omr.OMR;
 import org.audiveris.omr.sheet.Book;
 import org.audiveris.omr.sheet.ui.StubsController;
 
 import org.jdesktop.application.Action;
+import org.jdesktop.application.ApplicationActionMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.event.ActionEvent;
+
+import javax.swing.JOptionPane;
 
 /**
  * Class <code>MidiActions</code> gathers playback actions for the MIDI domain menu.
@@ -42,21 +46,51 @@ public class MidiActions
 
     private static final Logger logger = LoggerFactory.getLogger(MidiActions.class);
 
+    //~ Instance fields ----------------------------------------------------------------------------
+
+    private ApplicationActionMap actionMap;
+
     //~ Methods ------------------------------------------------------------------------------------
 
-    //------------//
-    // playScore //
-    //------------//
+    //-----------//
+    // actionMap //
+    //-----------//
+    private ApplicationActionMap actionMap ()
+    {
+        if (actionMap == null) {
+            actionMap = OMR.gui.getApplication().getContext().getActionMap(this);
+        }
+
+        return actionMap;
+    }
+
+    //-----------------//
+    // playPauseScore //
+    //-----------------//
     /**
-     * Play the current book score through the MIDI synthesizer,
-     * highlighting each sounding chord.
-     * A running playback, if any, is stopped and restarted.
+     * Play, pause or resume the current book score through the MIDI synthesizer,
+     * showing a playhead line that follows the sounding chord.
+     * A fresh play starts from the selected chord if any, else from the beginning.
      *
      * @param e the event that triggered this action
      */
     @Action
-    public void playScore (ActionEvent e)
+    public void playPauseScore (ActionEvent e)
     {
+        final ScorePlayer player = ScorePlayer.getInstance();
+
+        if (player.isPlaying()) {
+            player.pause();
+
+            return;
+        }
+
+        if (player.isPaused()) {
+            player.play(null);
+
+            return;
+        }
+
         final Book book = StubsController.getCurrentBook();
 
         if (book == null) {
@@ -64,14 +98,14 @@ public class MidiActions
             return;
         }
 
-        ScorePlayer.getInstance().play(book);
+        player.play(book);
     }
 
     //------------//
     // stopScore //
     //------------//
     /**
-     * Stop any running score playback.
+     * Stop any running or paused score playback.
      *
      * @param e the event that triggered this action
      */
@@ -79,5 +113,56 @@ public class MidiActions
     public void stopScore (ActionEvent e)
     {
         ScorePlayer.getInstance().stop();
+    }
+
+    //-----------//
+    // setTempo //
+    //-----------//
+    /**
+     * Ask the user for the playback tempo in BPM. It wins over metronome marks
+     * and applies live to a running playback as well as to the next exports.
+     *
+     * @param e the event that triggered this action
+     */
+    @Action
+    public void setTempo (ActionEvent e)
+    {
+        final ScorePlayer player = ScorePlayer.getInstance();
+        final String answer = JOptionPane.showInputDialog(
+                OMR.gui.getFrame(),
+                "Playback tempo (quarters per minute, 30-300):",
+                player.getTempo());
+
+        if (answer == null) {
+            return;
+        }
+
+        try {
+            player.setTempo(Integer.parseInt(answer.trim()));
+            TempoBox.refresh();
+        } catch (NumberFormatException ex) {
+            logger.warn("Invalid tempo {}", answer);
+        }
+    }
+
+    //-------------------//
+    // togglePlayhead //
+    //-------------------//
+    /**
+     * Show or hide the playback playhead line.
+     *
+     * @param e the event that triggered this action
+     */
+    @Action
+    public void togglePlayhead (ActionEvent e)
+    {
+        final ScorePlayer player = ScorePlayer.getInstance();
+        player.setPlayheadShown(!player.isPlayheadShown());
+
+        final Object action = actionMap().get("togglePlayhead");
+
+        if (action instanceof javax.swing.Action swingAction) {
+            swingAction.putValue("selected", player.isPlayheadShown());
+        }
     }
 }

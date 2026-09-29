@@ -39,7 +39,10 @@ import org.audiveris.omr.sig.inter.Inters;
 import org.audiveris.omr.sig.inter.KeyInter;
 import org.audiveris.omr.sig.inter.MetronomeInter;
 import org.audiveris.omr.sig.inter.RestInter;
+import org.audiveris.omr.sig.inter.StemInter;
 import org.audiveris.omr.sig.relation.ChordArpeggiatoRelation;
+import org.audiveris.omr.sig.relation.TremoloStemRelation;
+import org.audiveris.omr.sig.relation.TremoloWholeRelation;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,6 +89,9 @@ public class MidiExporter
     /** Ticks per quarter note. */
     public static final int PPQ = 480;
 
+    /** Fallback tempo (quarters per minute) when nothing else is set. */
+    public static final int DEFAULT_QPM = 120;
+
     /** Strum gap between two notes of an arpeggiated chord, in milliseconds. */
     private static final int STRUM_GAP_MS = 35;
 
@@ -98,6 +104,12 @@ public class MidiExporter
 
     /** Tempo actually used for the export (quarters per minute). */
     private int tempoQpm;
+
+    /** Explicit tempo override (toolbar), wins over metronome and constant. */
+    private Integer tempoOverride;
+
+    /** Chord id -> note-on tick, for playback seek/sync. */
+    private final Map<Integer, Long> chordTicks = new TreeMap<>();
 
     //~ Constructors -------------------------------------------------------------------------------
 
@@ -112,6 +124,46 @@ public class MidiExporter
     }
 
     //~ Methods ------------------------------------------------------------------------------------
+
+    //------------------//
+    // setTempoOverride //
+    //------------------//
+    /**
+     * Set an explicit tempo (toolbar BPM box), winning over metronome marks
+     * and the default constant.
+     *
+     * @param qpm quarters per minute, null to clear the override
+     */
+    public void setTempoOverride (Integer qpm)
+    {
+        tempoOverride = qpm;
+    }
+
+    //----------------//
+    // getChordTicks //
+    //----------------//
+    /**
+     * Report the note-on tick of each exported chord, for playback seek/sync.
+     *
+     * @return map of chord id to tick (valid after {@link #export(Path)})
+     */
+    public Map<Integer, Long> getChordTicks ()
+    {
+        return chordTicks;
+    }
+
+    //--------------//
+    // getTempoQpm //
+    //--------------//
+    /**
+     * Report the tempo used by the latest export.
+     *
+     * @return quarters per minute
+     */
+    public int getTempoQpm ()
+    {
+        return tempoQpm;
+    }
 
     //--------//
     // export //
@@ -207,6 +259,16 @@ public class MidiExporter
             track.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), lastTick(track)));
         }
 
+        // Conductor end-of-track at the very end (never at tick 0, so players
+        // and our own end detector never stop playback right at start)
+        long end = 0;
+
+        for (Track track : tracks.values()) {
+            end = Math.max(end, lastTick(track));
+        }
+
+        conductor.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), end));
+
         midiPath.toFile().getParentFile().mkdirs();
         MidiSystem.write(sequence, 1, midiPath.toFile());
         logger.info("Exported MIDI {}", midiPath);
@@ -216,13 +278,16 @@ public class MidiExporter
     // findTempo //
     //--------------//
     /**
-     * Report the tempo to use: first metronome mark found in the score,
-     * else the default tempo constant.
+     * Report the tempo to use: explicit override, else first metronome mark
+     * found in the score, else the default tempo constant.
      *
      * @return quarters per minute
      */
     private int findTempo ()
     {
+        if (tempoOverride != null && tempoOverride > 0) {
+            return tempoOverride;
+        }
         for (Page page : score.getPages()) {
             for (SystemInfo system : page.getSystems()) {
                 final SIGraph sig = system.getSig();
@@ -411,15 +476,33 @@ public class MidiExporter
 
             Collections.sort(pitches);
 
-            for (int i = 0; i < pitches.size(); i++) {
-                final int pitch = pitches.get(i);
-                final long noteOn = arpeggiated ? (onTick + i * strumTicks) : onTick;
-                events.add(new NoteEvent(pitch, noteOn, true));
-                events.add(new NoteEvent(pitch, onTick + durTicks, false));
+            if (isTremolo(chord) && !pitches.isEmpty()) {
+                // Repeated strikes (32nd-note grid) for tremolo signs
+                final long step = Math.max(1, toTicks(new Rational(1, 32)));
+                long strike = onTick;
+
+                while (strike < onTick + durTicks) {
+                    final long off = Math.min(strike + step, onTick + durTicks);
+
+                    for (int pitch : pitches) {
+                        events.add(new NoteEvent(pitch, strike, true));
+                        events.add(new NoteEvent(pitch, off, false));
+                    }
+
+                    strike += step;
+                }
+            } else {
+                for (int i = 0; i < pitches.size(); i++) {
+                    final int pitch = pitches.get(i);
+                    final long noteOn = arpeggiated ? (onTick + i * strumTicks) : onTick;
+                    events.add(new NoteEvent(pitch, noteOn, true));
+                    events.add(new NoteEvent(pitch, onTick + durTicks, false));
+                }
             }
 
             // Chord marker for playback highlight sync ("chord=<id>")
             markers.add(new Marker(chord.getId(), onTick));
+            chordTicks.put(chord.getId(), onTick);
         }
 
         // Advance by expected measure duration (keeps later measures aligned
@@ -458,6 +541,35 @@ public class MidiExporter
         for (Marker marker : markers) {
             addMarker(track, marker.tick, "chord=" + marker.chordId);
         }
+    }
+
+    //-------------//
+    // isTremolo //
+    //-------------//
+    /**
+     * Report whether the chord carries a tremolo sign (on stem or whole head).
+     */
+    private static boolean isTremolo (AbstractChordInter chord)
+    {
+        try {
+            final StemInter stem = chord.getStem();
+
+            if (stem != null && !stem.getSig().getRelations(
+                    stem,
+                    TremoloStemRelation.class).isEmpty()) {
+                return true;
+            }
+
+            for (Inter inter : chord.getNotes()) {
+                if (!inter.getSig().getRelations(inter, TremoloWholeRelation.class).isEmpty()) {
+                    return true;
+                }
+            }
+        } catch (Exception ex) {
+            // Ignore
+        }
+
+        return false;
     }
 
     //---------------//
@@ -643,7 +755,7 @@ public class MidiExporter
     {
         private final Constant.Integer defaultTempoQpm = new Constant.Integer(
                 "qpm",
-                120,
+                DEFAULT_QPM,
                 "Default playback/export tempo when no metronome mark is found");
     }
 
