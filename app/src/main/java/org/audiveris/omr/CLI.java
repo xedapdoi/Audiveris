@@ -23,6 +23,7 @@ package org.audiveris.omr;
 
 import org.audiveris.omr.classifier.SampleRepository;
 import org.audiveris.omr.log.LogUtil;
+import org.audiveris.omr.score.AudioExporter;
 import org.audiveris.omr.score.Score;
 import org.audiveris.omr.sheet.Book;
 import org.audiveris.omr.sheet.BookManager;
@@ -64,6 +65,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -663,6 +666,10 @@ public class CLI
         @Option(name = "-help", help = true, usage = "Display general help then stop")
         boolean helpMode;
 
+        /** Should MP3 audio be produced (via external ffmpeg)?. */
+        @Option(name = "-mp3", usage = "Export MP3 audio")
+        boolean mp3;
+
         /** Output directory. */
         @Option(name = "-output", usage = "Define base output folder", metaVar = "<output-folder>")
         Path outputFolder;
@@ -928,6 +935,32 @@ public class CLI
 
                     if (!ok && (OMR.gui == null)) {
                         throw new Exception("Error in export");
+                    }
+                }
+
+                // MP3 audio export?
+                if (params.mp3) {
+                    logger.debug("Export MP3");
+
+                    final Map<Score, Path> scoreMap = book.getScoreExportPaths(scores);
+
+                    for (Entry<Score, Path> entry : scoreMap.entrySet()) {
+                        final String scoreFileName = entry.getValue().getFileName().toString();
+                        final int dot = scoreFileName.lastIndexOf('.');
+                        final String mp3FileName = ((dot >= 0) ? scoreFileName.substring(0, dot)
+                                : scoreFileName) + ".mp3";
+
+                        try {
+                            new AudioExporter(entry.getKey()).exportMp3(
+                                    entry.getValue().resolveSibling(mp3FileName),
+                                    null);
+                        } catch (Exception ex) {
+                            logger.warn("Could not export MP3 for score", ex);
+
+                            if (OMR.gui == null) {
+                                throw new Exception("Error in MP3 export");
+                            }
+                        }
                     }
                 }
 

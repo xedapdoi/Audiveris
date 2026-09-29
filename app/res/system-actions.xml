@@ -102,6 +102,7 @@
 
     <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="playPauseScore" button="javax.swing.JButton" />
     <action domain="MIDI" section="10" class="org.audiveris.omr.score.ui.MidiActions" method="stopScore" button="javax.swing.JButton" />
+    <action domain="MIDI" section="15" class="org.audiveris.omr.score.ui.MidiActions" method="exportMp3" button="javax.swing.JButton" />
     <action domain="MIDI" section="20" class="org.audiveris.omr.score.ui.MidiActions" method="setTempo" />
     <action domain="MIDI" section="30" class="org.audiveris.omr.score.ui.MidiActions" method="togglePlayhead" item="javax.swing.JCheckBoxMenuItem" />
 

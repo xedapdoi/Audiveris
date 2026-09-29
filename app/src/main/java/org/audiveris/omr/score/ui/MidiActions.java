@@ -22,8 +22,13 @@
 package org.audiveris.omr.score.ui;
 
 import org.audiveris.omr.OMR;
+import org.audiveris.omr.score.AudioExporter;
+import org.audiveris.omr.score.Score;
 import org.audiveris.omr.sheet.Book;
+import org.audiveris.omr.sheet.BookManager;
 import org.audiveris.omr.sheet.ui.StubsController;
+import org.audiveris.omr.ui.util.OmrFileFilter;
+import org.audiveris.omr.ui.util.UIUtil;
 
 import org.jdesktop.application.Action;
 import org.jdesktop.application.ApplicationActionMap;
@@ -32,6 +37,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.event.ActionEvent;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 
 import javax.swing.JOptionPane;
 
@@ -99,6 +107,63 @@ public class MidiActions
         }
 
         player.play(book);
+    }
+
+    //-----------//
+    // exportMp3 //
+    //-----------//
+    /**
+     * Export the current book scores to MP3 files (MIDI rendered in Java,
+     * encoded through the external ffmpeg). Runs in the background.
+     *
+     * @param e the event that triggered this action
+     */
+    @Action
+    public void exportMp3 (ActionEvent e)
+    {
+        final Book book = StubsController.getCurrentBook();
+
+        if (book == null || book.getScores().isEmpty()) {
+            logger.warn("No scored book to export");
+            return;
+        }
+
+        final Path sansExt = BookManager.getDefaultExportPathSansExt(book);
+        final Path startPath = Paths.get(sansExt + ".mp3");
+        final Path target = UIUtil.pathChooser(
+                true,
+                OMR.gui.getFrame(),
+                startPath,
+                new OmrFileFilter("MP3 audio", "mp3"));
+
+        if (target == null) {
+            return;
+        }
+
+        final List<Score> scores = List.copyOf(book.getScores());
+        final int tempo = ScorePlayer.getInstance().getTempo();
+
+        new Thread(() -> {
+            try {
+                for (Score score : scores) {
+                    String name = target.getFileName().toString();
+
+                    if (scores.size() > 1) {
+                        final int dot = name.lastIndexOf('.');
+                        name = name.substring(0, dot) + ".mvt" + score.getId()
+                                + name.substring(dot);
+                    }
+
+                    new AudioExporter(score).exportMp3(
+                            target.resolveSibling(name),
+                            tempo);
+                }
+
+                logger.info("MP3 export done");
+            } catch (Exception ex) {
+                logger.warn("Could not export MP3", ex);
+            }
+        }, "mp3-export").start();
     }
 
     //------------//

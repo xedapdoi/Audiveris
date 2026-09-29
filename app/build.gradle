@@ -169,8 +169,14 @@ application {
     // Arg 3: Enable HiDPI/display scaling support for Linux Wayland (GNOME, KDE)
     //
     applicationDefaultJvmArgs = ["--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED",
-                                 "--enable-native-access=ALL-UNNAMED",
-                                 "-Dsun.java2d.uiScale.enabled=true"]
+                                  "--add-exports=java.desktop/com.sun.media.sound=ALL-UNNAMED",
+                                  "--enable-native-access=ALL-UNNAMED",
+                                  "-Dsun.java2d.uiScale.enabled=true"]
+}
+
+// Offline MIDI->WAV render uses the JDK software synthesizer (internal API)
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += '--add-exports=java.desktop/com.sun.media.sound=ALL-UNNAMED'
 }
 
 // Run default configuration.
