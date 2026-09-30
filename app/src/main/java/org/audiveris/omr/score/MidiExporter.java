@@ -40,10 +40,13 @@ import org.audiveris.omr.sig.inter.Inters;
 import org.audiveris.omr.sig.inter.KeyInter;
 import org.audiveris.omr.sig.inter.MetronomeInter;
 import org.audiveris.omr.sig.inter.RestInter;
+import org.audiveris.omr.sig.inter.SlurInter;
 import org.audiveris.omr.sig.inter.StemInter;
 import org.audiveris.omr.sig.relation.ChordArpeggiatoRelation;
+import org.audiveris.omr.sig.relation.SlurHeadRelation;
 import org.audiveris.omr.sig.relation.TremoloStemRelation;
 import org.audiveris.omr.sig.relation.TremoloWholeRelation;
+import org.audiveris.omr.util.HorizontalSide;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,6 +115,9 @@ public class MidiExporter
 
     /** Chord id -> note-on tick, for playback seek/sync. */
     private final Map<Integer, Long> chordTicks = new TreeMap<>();
+
+    /** Head id -> head, for tie analysis. */
+    private final Map<Integer, HeadInter> headIndex = new TreeMap<>();
 
     //~ Constructors -------------------------------------------------------------------------------
 
@@ -192,6 +198,7 @@ public class MidiExporter
         final Map<String, Long> cursors = new TreeMap<>();
         final Map<String, int[]> timeSigs = new TreeMap<>(); // trackKey -> {num, den}
         final Map<String, String> clefs = new TreeMap<>(); // trackKey -> G/F/C/?
+        final Map<String, List<NoteEvent>> trackEvents = new TreeMap<>();
         int channelAlloc = 0;
 
         // Play order with repeats expanded (volta-aware)
@@ -281,7 +288,8 @@ public class MidiExporter
                                 channels.get(trackKey),
                                 startTick,
                                 timeSigs,
-                                trackKey);
+                                trackKey,
+                                trackEvents);
                     }
 
                     cursors.put(trackKey, startTick + advance);
@@ -289,7 +297,30 @@ public class MidiExporter
             }
         }
 
-        for (Track track : tracks.values()) {
+        // Merge ties, then emit note events per track (offs before ons at
+        // equal ticks). Tied-to note-ons disappear into the sustained note.
+        for (Map.Entry<String, Track> trackEntry : tracks.entrySet()) {
+            final String trackKey = trackEntry.getKey();
+            final Track track = trackEntry.getValue();
+            final List<NoteEvent> events = trackEvents.getOrDefault(
+                    trackKey,
+                    new ArrayList<>());
+            mergeTies(events);
+
+            events.sort((a,
+                         b) -> (a.tick != b.tick) ? Long.compare(a.tick, b.tick)
+                           : Boolean.compare(a.on, b.on));
+
+            final int channel = channels.get(trackKey);
+
+            for (NoteEvent event : events) {
+                if (event.on) {
+                    addNoteOn(track, event.tick, channel, event.pitch, VELOCITY);
+                } else {
+                    addNoteOff(track, event.tick, channel, event.pitch);
+                }
+            }
+
             track.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), lastTick(track)));
         }
 
@@ -499,7 +530,8 @@ public class MidiExporter
                                 int channel,
                                 long startTick,
                                 Map<String, int[]> timeSigs,
-                                String trackKey)
+                                String trackKey,
+                                Map<String, List<NoteEvent>> trackEvents)
         throws Exception
     {
         final long cursor = startTick;
@@ -540,7 +572,7 @@ public class MidiExporter
 
             // Arpeggiated chord? Strum bottom-up instead of block.
             final boolean arpeggiated = isArpeggiated(chord);
-            final List<Integer> pitches = new ArrayList<>();
+            final List<PitchedHead> pitched = new ArrayList<>();
 
             for (Inter inter : chord.getNotes()) {
                 if (inter instanceof RestInter) {
@@ -548,13 +580,17 @@ public class MidiExporter
                 }
 
                 if (inter instanceof HeadInter head) {
-                    pitches.add(toMidi(head, entry.fifths));
+                    pitched.add(new PitchedHead(toMidi(head, entry.fifths), head.getId()));
+                    headIndex.put(head.getId(), head);
                 }
             }
 
-            Collections.sort(pitches);
+            pitched.sort((a,
+                          b) -> Integer.compare(a.pitch, b.pitch));
 
-            if (isTremolo(chord) && !pitches.isEmpty()) {
+            final boolean tremolo = isTremolo(chord) && !pitched.isEmpty();
+
+            if (tremolo) {
                 // Repeated strikes (32nd-note grid) for tremolo signs
                 final long step = Math.max(1, toTicks(new Rational(1, 32)));
                 long strike = onTick;
@@ -562,19 +598,19 @@ public class MidiExporter
                 while (strike < onTick + durTicks) {
                     final long off = Math.min(strike + step, onTick + durTicks);
 
-                    for (int pitch : pitches) {
-                        events.add(new NoteEvent(pitch, strike, true));
-                        events.add(new NoteEvent(pitch, off, false));
+                    for (PitchedHead ph : pitched) {
+                        events.add(new NoteEvent(ph.pitch, strike, true));
+                        events.add(new NoteEvent(ph.pitch, off, false));
                     }
 
                     strike += step;
                 }
             } else {
-                for (int i = 0; i < pitches.size(); i++) {
-                    final int pitch = pitches.get(i);
+                for (int i = 0; i < pitched.size(); i++) {
+                    final PitchedHead ph = pitched.get(i);
                     final long noteOn = arpeggiated ? (onTick + i * strumTicks) : onTick;
-                    events.add(new NoteEvent(pitch, noteOn, true));
-                    events.add(new NoteEvent(pitch, onTick + durTicks, false));
+                    events.add(new NoteEvent(ph.pitch, noteOn, true, ph.headId));
+                    events.add(new NoteEvent(ph.pitch, onTick + durTicks, false));
                 }
             }
 
@@ -583,20 +619,8 @@ public class MidiExporter
             chordTicks.putIfAbsent(chord.getId(), onTick);
         }
 
-        // Advance is handled by the caller (all tracks in lockstep)
-
-        // Emit note events ordered by tick (offs before ons at equal ticks)
-        events.sort((a,
-                     b) -> (a.tick != b.tick) ? Long.compare(a.tick, b.tick)
-                       : Boolean.compare(a.on, b.on));
-
-        for (NoteEvent event : events) {
-            if (event.on) {
-                addNoteOn(track, event.tick, channel, event.pitch, VELOCITY);
-            } else {
-                addNoteOff(track, event.tick, channel, event.pitch);
-            }
-        }
+        // Stash events for end-of-export tie merging and emission
+        trackEvents.computeIfAbsent(trackKey, k -> new ArrayList<>()).addAll(events);
 
         for (Marker marker : markers) {
             addMarker(track, marker.tick, "chord=" + marker.chordId);
@@ -627,6 +651,84 @@ public class MidiExporter
             }
         } catch (Exception ex) {
             // Ignore
+        }
+
+        return false;
+    }
+
+    //-----------//
+    // mergeTies //
+    //-----------//
+    /**
+     * Merge tied notes within one track: a note-on whose head is tied from a
+     * previous head, coinciding with that pitch note-off, disappears into the
+     * sustained note (no re-articulation, extended duration).
+     *
+     * @param events track events (modified in place)
+     */
+    private void mergeTies (List<NoteEvent> events)
+    {
+        final java.util.Set<Long> offs = new java.util.HashSet<>();
+
+        for (NoteEvent event : events) {
+            if (!event.on) {
+                offs.add((((long) event.pitch) << 32) | (event.tick & 0xFFFFFFFFL));
+            }
+        }
+
+        final java.util.Set<NoteEvent> removed = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<>());
+
+        for (NoteEvent event : events) {
+            if (event.on && event.headId != 0 && isTieTarget(event.headId)
+                    && offs.contains((((long) event.pitch) << 32) | (event.tick & 0xFFFFFFFFL))) {
+                // Remove this re-articulation...
+                removed.add(event);
+
+                // ...and the matching note-off it swallows
+                for (NoteEvent off : events) {
+                    if (!off.on && !removed.contains(off) && off.pitch == event.pitch
+                            && off.tick == event.tick) {
+                        removed.add(off);
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!removed.isEmpty()) {
+            events.removeIf(removed::contains);
+            logger.debug("Merged {} tied note events", removed.size());
+        }
+    }
+
+    //--------------//
+    // isTieTarget //
+    //--------------//
+    /**
+     * Report whether the head is tied from a previous head (right side of a
+     * tie slur).
+     */
+    private boolean isTieTarget (int headId)
+    {
+        final HeadInter head = headIndex.get(headId);
+
+        if (head == null) {
+            return false;
+        }
+
+        try {
+            for (org.audiveris.omr.sig.relation.Relation rel : head.getSig()
+                    .getRelations(head, SlurHeadRelation.class)) {
+                final SlurInter slur = (SlurInter) head.getSig().getOppositeInter(head, rel);
+
+                if (slur.isTie() && slur.getHead(HorizontalSide.RIGHT) == head) {
+                    return true;
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("Tie check failed for head {}", headId, ex);
         }
 
         return false;
@@ -849,13 +951,43 @@ public class MidiExporter
 
         final boolean on;
 
+        /** Head id for on-events (0 when unknown), used for tie merging. */
+        final int headId;
+
         NoteEvent (int pitch,
                    long tick,
                    boolean on)
         {
+            this(pitch, tick, on, 0);
+        }
+
+        NoteEvent (int pitch,
+                   long tick,
+                   boolean on,
+                   int headId)
+        {
             this.pitch = pitch;
             this.tick = tick;
             this.on = on;
+            this.headId = headId;
+        }
+    }
+
+    //--------------//
+    // PitchedHead //
+    //--------------//
+    /** A MIDI pitch with its head id, sorted bottom-up. */
+    private static class PitchedHead
+    {
+        final int pitch;
+
+        final int headId;
+
+        PitchedHead (int pitch,
+                     int headId)
+        {
+            this.pitch = pitch;
+            this.headId = headId;
         }
     }
 

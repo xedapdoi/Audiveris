@@ -678,19 +678,23 @@ public class ChordListMenu
                     SystemInfo system = sig.getSystem();
 
                     if (system != null) {
+                        // Stems resolve to all their head chords (for beam grouping, etc.)
+                        if (inter instanceof StemInter stem) {
+                            for (HeadChordInter stemChord : stem.getChords()) {
+                                if (stemChord != null
+                                        && !(stemChord instanceof SmallChordInter)) {
+                                    addChord(chordMap, system, stemChord);
+                                }
+                            }
+
+                            continue;
+                        }
+
                         // Is there a relevant chord related to this inter?
                         AbstractChordInter chord = relatedChord(inter);
 
                         if (chord != null) {
-                            List<AbstractChordInter> list = chordMap.get(system);
-
-                            if (list == null) {
-                                chordMap.put(system, list = new ArrayList<>());
-                            }
-
-                            if (!list.contains(chord)) {
-                                list.add(chord);
-                            }
+                            addChord(chordMap, system, chord);
                         }
                     }
                 }
@@ -702,6 +706,27 @@ public class ChordListMenu
         }
 
         return chordMap;
+    }
+
+    //----------//
+    // addChord //
+    //----------//
+    /**
+     * Add a chord to the per-system map (deduplicated).
+     */
+    private void addChord (Map<SystemInfo, List<AbstractChordInter>> chordMap,
+                           SystemInfo system,
+                           AbstractChordInter chord)
+    {
+        List<AbstractChordInter> list = chordMap.get(system);
+
+        if (list == null) {
+            chordMap.put(system, list = new ArrayList<>());
+        }
+
+        if (!list.contains(chord)) {
+            list.add(chord);
+        }
     }
 
     //--------------//
