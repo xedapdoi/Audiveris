@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -91,13 +92,119 @@ public class AudioExporter
     // getFfmpegPath //
     //----------------//
     /**
-     * Report the configured ffmpeg path.
+     * Report the configured ffmpeg path, resolved to an executable.
      *
      * @return ffmpeg executable path (or plain "ffmpeg" from PATH)
+     * @throws IllegalStateException if no ffmpeg can be found, with guidance
      */
     public static String getFfmpegPath ()
     {
-        return constants.ffmpegPath.getValue();
+        final String configured = constants.ffmpegPath.getValue();
+
+        if (configured != null && !configured.isBlank()) {
+            final Path direct = Paths.get(configured);
+
+            if (Files.isExecutable(direct)) {
+                return direct.toString();
+            }
+
+            final String found = findOnPath(configured);
+
+            if (found != null) {
+                logger.info("Resolved ffmpeg: {}", found);
+
+                return found;
+            }
+
+            final String winget = findWingetFfmpeg();
+
+            if (winget != null) {
+                logger.info("Resolved ffmpeg via winget install: {}", winget);
+
+                return winget;
+            }
+        }
+
+        throw new IllegalStateException(
+                "ffmpeg not found ('" + configured + "'). Install ffmpeg or set its path "
+                        + "in Tools > defineConstants (AudioExporter), then retry. "
+                        + "The intermediate WAV is kept.");
+    }
+
+    //-------------//
+    // findOnPath //
+    //-------------//
+    /**
+     * Search an executable name on the system PATH.
+     *
+     * @return full path or null
+     */
+    private static String findOnPath (String name)
+    {
+        // Absolute or relative path pointing to a file wins directly
+        final Path direct = Paths.get(name);
+
+        if (Files.isExecutable(direct)) {
+            return direct.toString();
+        }
+
+        // Plain name without extension on Windows also matches name.exe
+        final String pathEnv = System.getenv("PATH");
+
+        if (pathEnv == null) {
+            return null;
+        }
+
+        for (String dir : pathEnv.split(java.util.regex.Pattern.quote(
+                java.io.File.pathSeparator))) {
+            for (String candidate : new String[] { name, name + ".exe" }) {
+                final Path path = Paths.get(dir, candidate);
+
+                if (Files.isExecutable(path)) {
+                    return path.toString();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    //-------------------//
+    // findWingetFfmpeg //
+    //-------------------//
+    /**
+     * Look for a winget-installed ffmpeg (Windows).
+     *
+     * @return full path or null
+     */
+    private static String findWingetFfmpeg ()
+    {
+        try {
+            final String localApp = System.getenv("LOCALAPPDATA");
+
+            if (localApp == null) {
+                return null;
+            }
+
+            final Path packages = Paths.get(
+                    localApp,
+                    "Microsoft",
+                    "WinGet",
+                    "Packages");
+
+            if (!Files.isDirectory(packages)) {
+                return null;
+            }
+
+            try (var stream = Files.walk(packages, 4)) {
+                return stream.filter(p -> p.getFileName().toString().equalsIgnoreCase(
+                        "ffmpeg.exe")).map(Path::toString).findFirst().orElse(null);
+            }
+        } catch (Exception ex) {
+            logger.debug("Winget ffmpeg lookup failed", ex);
+
+            return null;
+        }
     }
 
     //----------------//
@@ -232,8 +339,12 @@ public class AudioExporter
             final byte[] buffer = new byte[(int) (SAMPLE_RATE * 4 / 10)]; // 0.1 s
             final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
             final long startNanos = System.nanoTime();
+            final long totalSeconds = Math.max(1, frames / (long) SAMPLE_RATE);
             long got = 0;
             int n;
+            int nextPercent = 25;
+
+            logger.info("Rendering audio (~{} s realtime)...", totalSeconds);
 
             while (got < frames) {
                 final int want = (int) Math.min(buffer.length, (frames - got) * 4);
@@ -245,6 +356,13 @@ public class AudioExporter
 
                 out.write(buffer, 0, n);
                 got += n / 4;
+
+                final int percent = (int) (got * 100 / frames);
+
+                if (percent >= nextPercent) {
+                    logger.info("Rendering audio... {}%", Math.min(99, percent));
+                    nextPercent += 25;
+                }
 
                 final long elapsedMs = (System.nanoTime() - startNanos) / 1000000;
                 final long expectedMs = got * 1000 / (long) SAMPLE_RATE;

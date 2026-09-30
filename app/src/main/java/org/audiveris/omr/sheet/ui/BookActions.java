@@ -638,8 +638,8 @@ public class BookActions
     // exportBookAs //
     //--------------//
     /**
-     * Export the current book: open the format dialog (MusicXML, MXL opus,
-     * MIDI, MP3, WAV, JSON, merged or not) once scores are transcribed.
+     * Export books: open the format dialog (scope, MusicXML, MXL opus, MIDI,
+     * MP3, WAV, JSON, merged or not).
      *
      * @param e the event that triggered this action
      */
@@ -652,22 +652,7 @@ public class BookActions
             return;
         }
 
-        new Thread(() -> {
-            try {
-                final List<SheetStub> stubs = book.getValidSelectedStubs();
-                final List<Score> scores = new ArrayList<>();
-                final boolean swap = Main.getCli().isSwap() || swapProcessedSheets();
-
-                if (!book.transcribe(stubs, scores, swap) || scores.isEmpty()) {
-                    logger.warn("Could not transcribe book for export");
-                    return;
-                }
-
-                javax.swing.SwingUtilities.invokeLater(() -> ExportDialog.show(book, scores));
-            } catch (Exception ex) {
-                logger.warn("Error preparing export {}", ex.toString(), ex);
-            }
-        }, "export-prepare").start();
+        ExportDialog.open();
     }
 
     //---------------//
