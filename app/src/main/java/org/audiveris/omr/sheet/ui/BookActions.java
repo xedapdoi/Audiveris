@@ -31,6 +31,7 @@ import org.audiveris.omr.log.LogUtil;
 import org.audiveris.omr.plugin.Plugin;
 import org.audiveris.omr.plugin.PluginsManager;
 import org.audiveris.omr.score.Score;
+import org.audiveris.omr.score.ui.ExportDialog;
 import org.audiveris.omr.score.ui.BookParameters;
 import org.audiveris.omr.score.ui.LogicalPartsEditor;
 import org.audiveris.omr.score.ui.SheetScaling;
@@ -627,7 +628,9 @@ public class BookActions
             //TODO: check/prompt for overwrite??? (perhaps several files)
             return new ExportBookTask(book, exportPathSansExt);
         } else {
-            return exportBookAs(e);
+            exportBookAs(e);
+
+            return null;
         }
     }
 
@@ -635,41 +638,36 @@ public class BookActions
     // exportBookAs //
     //--------------//
     /**
-     * Export the current book, using MusicXML format, to a user-provided location.
+     * Export the current book: open the format dialog (MusicXML, MXL opus,
+     * MIDI, MP3, WAV, JSON, merged or not) once scores are transcribed.
      *
      * @param e the event that triggered this action
-     * @return the task to launch in background
      */
     @Action(enabledProperty = BOOK_IDLE)
-    public Task<Void, Void> exportBookAs (ActionEvent e)
+    public void exportBookAs (ActionEvent e)
     {
         final Book book = StubsController.getCurrentBook();
 
         if ((book == null) || !hasValidSelectedSheets(book)) {
-            return null;
+            return;
         }
 
-        // Let user select book export target
-        //TODO: if we have several movements in this book, export will result in several files...
-        //TODO: so, how can we check/prompt for overwrite?
-        final String ext = BookManager.getExportExtension();
-        final Path sansExt = BookManager.getDefaultExportPathSansExt(book);
-        final Path targetPath = Paths.get(sansExt + ext);
-        final Path bookPath = UIUtil.pathChooser(
-                true,
-                OMR.gui.getFrame(),
-                targetPath,
-                filter(ext),
-                resources.getString("chooseBookExport"));
+        new Thread(() -> {
+            try {
+                final List<SheetStub> stubs = book.getValidSelectedStubs();
+                final List<Score> scores = new ArrayList<>();
+                final boolean swap = Main.getCli().isSwap() || swapProcessedSheets();
 
-        if ((bookPath == null) || !isTargetConfirmed(bookPath)) {
-            return null;
-        }
+                if (!book.transcribe(stubs, scores, swap) || scores.isEmpty()) {
+                    logger.warn("Could not transcribe book for export");
+                    return;
+                }
 
-        // Remove extensions if any (.opus.mxl, .mxl, .xml, .mvt#.mxl, .mvt#.xml)
-        final Path bookPathSansExt = ExportPattern.getPathSansExt(bookPath);
-
-        return new ExportBookTask(book, bookPathSansExt);
+                javax.swing.SwingUtilities.invokeLater(() -> ExportDialog.show(book, scores));
+            } catch (Exception ex) {
+                logger.warn("Error preparing export {}", ex.toString(), ex);
+            }
+        }, "export-prepare").start();
     }
 
     //---------------//

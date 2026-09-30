@@ -119,7 +119,7 @@ public class AudioExporter
     // exportMp3 //
     //-----------//
     /**
-     * Export the score to the provided MP3 file path.
+     * Export one score to the provided MP3 file path.
      *
      * @param mp3Path       target .mp3 path (parent folders are created)
      * @param tempoOverride explicit tempo in qpm, null for default
@@ -129,23 +129,40 @@ public class AudioExporter
                            Integer tempoOverride)
         throws Exception
     {
+        exportMergedMp3(mp3Path, java.util.Collections.singletonList(score), tempoOverride);
+    }
+
+    //------------------//
+    // exportMergedMp3 //
+    //------------------//
+    /**
+     * Export several scores (movements) into a single MP3 file, played one
+     * after the other.
+     *
+     * @param mp3Path       target .mp3 path (parent folders are created)
+     * @param scores        scores in play order
+     * @param tempoOverride explicit tempo in qpm, null for default
+     * @throws Exception if anything goes wrong
+     */
+    public void exportMergedMp3 (Path mp3Path,
+                                 java.util.List<Score> scores,
+                                 Integer tempoOverride)
+        throws Exception
+    {
         mp3Path.toFile().getParentFile().mkdirs();
 
-        final Path midiFile = Files.createTempFile("audiveris-audio-", ".mid");
         final Path wavFile = Files.createTempFile("audiveris-audio-", ".wav");
 
         try {
-            final MidiExporter midiExporter = new MidiExporter(score);
+            final MidiExporter midiExporter = new MidiExporter(
+                    scores.isEmpty() ? score : scores.get(0));
             midiExporter.setTempoOverride(tempoOverride);
-            midiExporter.export(midiFile);
-
-            renderWav(midiFile, wavFile);
+            final Sequence sequence = midiExporter.buildSequence(
+                    scores.isEmpty() ? java.util.Collections.singletonList(score) : scores);
+            renderWav(sequence, wavFile);
             encodeMp3(wavFile, mp3Path);
-            logger.info("Exported MP3 {}", mp3Path);
+            logger.info("Exported merged MP3 {}", mp3Path);
         } finally {
-            Files.deleteIfExists(midiFile);
-
-            // Keep the WAV only when MP3 encoding failed
             if (Files.exists(mp3Path)) {
                 Files.deleteIfExists(wavFile);
             } else {
@@ -158,19 +175,45 @@ public class AudioExporter
         }
     }
 
+    //------------------//
+    // exportMergedWav //
+    //------------------//
+    /**
+     * Export several scores (movements) into a single WAV file.
+     *
+     * @param wavPath       target .wav path (parent folders are created)
+     * @param scores        scores in play order
+     * @param tempoOverride explicit tempo in qpm, null for default
+     * @throws Exception if anything goes wrong
+     */
+    public void exportMergedWav (Path wavPath,
+                                 java.util.List<Score> scores,
+                                 Integer tempoOverride)
+        throws Exception
+    {
+        wavPath.toFile().getParentFile().mkdirs();
+
+        final MidiExporter midiExporter = new MidiExporter(
+                scores.isEmpty() ? score : scores.get(0));
+        midiExporter.setTempoOverride(tempoOverride);
+        final Sequence sequence = midiExporter.buildSequence(
+                scores.isEmpty() ? java.util.Collections.singletonList(score) : scores);
+        renderWav(sequence, wavPath);
+        logger.info("Exported merged WAV {}", wavPath);
+    }
+
     //------------//
     // renderWav //
     //------------//
     /**
-     * Render a MIDI file to WAV (pure Java, no external tool).
+     * Render a MIDI sequence to WAV (pure Java, no external tool).
      * Reads are paced to realtime so the sequencer events line up with the
      * rendered samples (unpaced offline pulls run ahead and capture silence).
      */
-    private static void renderWav (Path midiFile,
+    private static void renderWav (Sequence sequence,
                                    Path wavFile)
         throws Exception
     {
-        final Sequence sequence = MidiSystem.getSequence(midiFile.toFile());
         final AudioSynthesizer synthesizer = (AudioSynthesizer) MidiSystem.getSynthesizer();
         final AudioFormat format = new AudioFormat(SAMPLE_RATE, 16, 2, true, false);
         final Map<String, Object> info = new HashMap<>();

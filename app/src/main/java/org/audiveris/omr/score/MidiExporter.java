@@ -97,6 +97,9 @@ public class MidiExporter
     /** Fallback tempo (quarters per minute) when nothing else is set. */
     public static final int DEFAULT_QPM = 120;
 
+    /** Global tempo override (toolbar BPM box): wins everywhere, all books. */
+    private static volatile Integer globalTempoOverride;
+
     /** Strum gap between two notes of an arpeggiated chord, in milliseconds. */
     private static final int STRUM_GAP_MS = 35;
 
@@ -132,6 +135,34 @@ public class MidiExporter
     }
 
     //~ Methods ------------------------------------------------------------------------------------
+
+    //------------------//
+    // setGlobalTempo //
+    //------------------//
+    /**
+     * Set the global tempo override (toolbar BPM box). It wins over metronome
+     * marks and the default constant, for playback and every export of every
+     * open book.
+     *
+     * @param qpm quarters per minute, null to clear the override
+     */
+    public static void setGlobalTempo (Integer qpm)
+    {
+        globalTempoOverride = qpm;
+    }
+
+    //------------------//
+    // getGlobalTempo //
+    //------------------//
+    /**
+     * Report the global tempo override, if any.
+     *
+     * @return quarters per minute or null
+     */
+    public static Integer getGlobalTempo ()
+    {
+        return globalTempoOverride;
+    }
 
     //------------------//
     // setTempoOverride //
@@ -177,12 +208,204 @@ public class MidiExporter
     // export //
     //--------//
     /**
-     * Export the score to the provided MIDI file path.
+     * Export one score to the provided MIDI file path.
      *
      * @param midiPath target .mid path (parent folders are created)
      * @throws Exception if anything goes wrong
      */
     public void export (Path midiPath)
+        throws Exception
+    {
+        final Sequence sequence = buildSequence(java.util.Collections.singletonList(score));
+        midiPath.toFile().getParentFile().mkdirs();
+        MidiSystem.write(sequence, 1, midiPath.toFile());
+        logger.info("Exported MIDI {}", midiPath);
+    }
+
+    //---------------//
+    // exportMerged //
+    //---------------//
+    /**
+     * Export several scores (movements) into a single MIDI file, played one
+     * after the other. Tracks are matched by name across movements.
+     *
+     * @param midiPath target .mid path (parent folders are created)
+     * @param scores   scores in play order
+     * @throws Exception if anything goes wrong
+     */
+    public void exportMerged (Path midiPath,
+                              List<Score> scores)
+        throws Exception
+    {
+        final Sequence sequence = buildSequence(scores);
+        midiPath.toFile().getParentFile().mkdirs();
+        MidiSystem.write(sequence, 1, midiPath.toFile());
+        logger.info("Exported merged MIDI {}", midiPath);
+    }
+
+    //----------------//
+    // buildSequence //
+    //----------------//
+    /**
+     * Build a single MIDI sequence for the provided scores played in order.
+     * Also populates chord ticks for seek/sync.
+     *
+     * @param scores scores in play order
+     * @return merged sequence
+     * @throws Exception if anything goes wrong
+     */
+    public Sequence buildSequence (List<Score> scores)
+        throws Exception
+    {
+        final List<Sequence> sequences = new ArrayList<>();
+
+        for (Score s : scores) {
+            final MidiExporter one = new MidiExporter(s);
+            one.setTempoOverride(tempoOverride != null ? tempoOverride : globalTempoOverride);
+            sequences.add(one.buildSingle());
+
+            for (Map.Entry<Integer, Long> entry : one.getChordTicks().entrySet()) {
+                chordTicks.putIfAbsent(entry.getKey(), entry.getValue() + sequencesOffset(
+                        sequences));
+            }
+        }
+
+        return mergeSequences(sequences);
+    }
+
+    //--------------------//
+    // sequencesOffset //
+    //--------------------//
+    /**
+     * Report the global end tick of all sequences but the last one, used to
+     * shift chord ticks of the latest movement.
+     */
+    private static long sequencesOffset (List<Sequence> sequences)
+    {
+        long offset = 0;
+
+        for (int i = 0; i < sequences.size() - 1; i++) {
+            offset += sequenceLength(sequences.get(i));
+        }
+
+        return offset;
+    }
+
+    //-----------------//
+    // sequenceLength //
+    //-----------------//
+    /**
+     * Report the tick length of a sequence (max over tracks).
+     */
+    private static long sequenceLength (Sequence sequence)
+    {
+        long max = 0;
+
+        for (Track track : sequence.getTracks()) {
+            for (int i = 0; i < track.size(); i++) {
+                max = Math.max(max, track.get(i).getTick());
+            }
+        }
+
+        return max;
+    }
+
+    //-----------------//
+    // mergeSequences //
+    //-----------------//
+    /**
+     * Concatenate sequences end to end. Tracks are matched by track-name meta;
+     * unmatched tracks are appended. All tracks share one global time offset
+     * per movement so staves stay synchronized.
+     *
+     * @param sequences sequences in play order
+     * @return merged sequence
+     * @throws Exception if anything goes wrong
+     */
+    public static Sequence mergeSequences (List<Sequence> sequences)
+        throws Exception
+    {
+        final Sequence merged = new Sequence(Sequence.PPQ, PPQ);
+        final Map<String, Track> byName = new TreeMap<>();
+        long offset = 0;
+
+        for (Sequence sequence : sequences) {
+            final Track[] tracks = sequence.getTracks();
+
+            for (int i = 0; i < tracks.length; i++) {
+                final Track track = tracks[i];
+                final String name = (i == 0) ? "" : trackName(track, "track" + i);
+                Track target = (i == 0 && byName.containsKey("")) ? byName.get("")
+                        : byName.get(name);
+
+                if (target == null) {
+                    target = merged.createTrack();
+                    byName.put((i == 0) ? "" : name, target);
+
+                    if (i != 0) {
+                        addTrackName(target, 0, name);
+                    }
+                }
+
+                for (int j = 0; j < track.size(); j++) {
+                    final MidiEvent event = track.get(j);
+
+                    if (event.getMessage() instanceof MetaMessage meta
+                            && meta.getType() == 0x2F) {
+                        continue; // Skip intermediate ends, single end added later
+                    }
+
+                    if (event.getMessage() instanceof MetaMessage meta
+                            && meta.getType() == 0x03 && i != 0) {
+                        continue; // Name already set on merged track
+                    }
+
+                    target.add(
+                            new MidiEvent(
+                                    event.getMessage(),
+                                    event.getTick() + offset));
+                }
+            }
+
+            offset += sequenceLength(sequence);
+        }
+
+        for (Track track : merged.getTracks()) {
+            track.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), lastTick(track)));
+        }
+
+        return merged;
+    }
+
+    //------------//
+    // trackName //
+    //------------//
+    /**
+     * Report the track-name meta of a track, if any.
+     */
+    private static String trackName (Track track,
+                                     String fallback)
+    {
+        for (int i = 0; i < track.size(); i++) {
+            if (track.get(i).getMessage() instanceof MetaMessage meta
+                    && meta.getType() == 0x03) {
+                return new String(meta.getData(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+
+        return fallback;
+    }
+
+    //-----------------//
+    // buildSingle //
+    //-----------------//
+    /**
+     * Build the MIDI sequence for this exporter score.
+     *
+     * @return sequence
+     * @throws Exception if anything goes wrong
+     */
+    private Sequence buildSingle ()
         throws Exception
     {
         tempoQpm = findTempo();
@@ -334,9 +557,7 @@ public class MidiExporter
 
         conductor.add(new MidiEvent(new MetaMessage(0x2F, new byte[0], 0), end));
 
-        midiPath.toFile().getParentFile().mkdirs();
-        MidiSystem.write(sequence, 1, midiPath.toFile());
-        logger.info("Exported MIDI {}", midiPath);
+        return sequence;
     }
 
     //----------------//
@@ -385,8 +606,9 @@ public class MidiExporter
     // findTempo //
     //--------------//
     /**
-     * Report the tempo to use: explicit override, else first metronome mark
-     * found in the score, else the default tempo constant.
+     * Report the tempo to use: explicit override, else global toolbar tempo,
+     * else first metronome mark found in the score, else the default tempo
+     * constant.
      *
      * @return quarters per minute
      */
@@ -394,6 +616,10 @@ public class MidiExporter
     {
         if (tempoOverride != null && tempoOverride > 0) {
             return tempoOverride;
+        }
+
+        if (globalTempoOverride != null && globalTempoOverride > 0) {
+            return globalTempoOverride;
         }
         for (Page page : score.getPages()) {
             for (SystemInfo system : page.getSystems()) {

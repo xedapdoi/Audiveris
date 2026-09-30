@@ -24,6 +24,7 @@ package org.audiveris.omr;
 import org.audiveris.omr.classifier.SampleRepository;
 import org.audiveris.omr.log.LogUtil;
 import org.audiveris.omr.score.AudioExporter;
+import org.audiveris.omr.score.MidiExporter;
 import org.audiveris.omr.score.Score;
 import org.audiveris.omr.sheet.Book;
 import org.audiveris.omr.sheet.BookManager;
@@ -666,6 +667,10 @@ public class CLI
         @Option(name = "-help", help = true, usage = "Display general help then stop")
         boolean helpMode;
 
+        /** Should movements be merged into single files?. */
+        @Option(name = "-merge", usage = "Merge movements into single MIDI/MP3 files")
+        boolean merge;
+
         /** Should MP3 audio be produced (via external ffmpeg)?. */
         @Option(name = "-mp3", usage = "Export MP3 audio")
         boolean mp3;
@@ -939,7 +944,7 @@ public class CLI
                 }
 
                 // MP3 audio export?
-                if (params.mp3) {
+                if (params.mp3 && !params.merge) {
                     logger.debug("Export MP3");
 
                     final Map<Score, Path> scoreMap = book.getScoreExportPaths(scores);
@@ -959,6 +964,47 @@ public class CLI
 
                             if (OMR.gui == null) {
                                 throw new Exception("Error in MP3 export");
+                            }
+                        }
+                    }
+                }
+
+                // Merged single-file MIDI (+MP3) export?
+                if (params.merge) {
+                    logger.debug("Export merged files");
+
+                    if (scores.isEmpty()) {
+                        logger.warn("No scores to merge");
+                    } else {
+                        final Path base = BookManager.getActualPath(
+                                book.getExportPathSansExt(),
+                                BookManager.getDefaultExportPathSansExt(book));
+                        final String baseName = base.getFileName().toString();
+
+                        try {
+                            new MidiExporter(scores.get(0)).exportMerged(
+                                    base.resolveSibling(baseName + ".mid"),
+                                    scores);
+                        } catch (Exception ex) {
+                            logger.warn("Could not export merged MIDI", ex);
+
+                            if (OMR.gui == null) {
+                                throw new Exception("Error in merged MIDI export");
+                            }
+                        }
+
+                        if (params.mp3) {
+                            try {
+                                new AudioExporter(scores.get(0)).exportMergedMp3(
+                                        base.resolveSibling(baseName + ".mp3"),
+                                        scores,
+                                        null);
+                            } catch (Exception ex) {
+                                logger.warn("Could not export merged MP3", ex);
+
+                                if (OMR.gui == null) {
+                                    throw new Exception("Error in merged MP3 export");
+                                }
                             }
                         }
                     }
