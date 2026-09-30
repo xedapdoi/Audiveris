@@ -162,7 +162,9 @@ public class AudioExporter
     // renderWav //
     //------------//
     /**
-     * Render a MIDI file to WAV offline (pure Java, no external tool).
+     * Render a MIDI file to WAV (pure Java, no external tool).
+     * Reads are paced to realtime so the sequencer events line up with the
+     * rendered samples (unpaced offline pulls run ahead and capture silence).
      */
     private static void renderWav (Path midiFile,
                                    Path wavFile)
@@ -175,7 +177,6 @@ public class AudioExporter
         final AudioInputStream raw = synthesizer.openStream(format, info);
         final long frames = (long) (sequence.getMicrosecondLength() / 1000000.0 * SAMPLE_RATE)
                 + (long) SAMPLE_RATE * TAIL_SECONDS;
-        final AudioInputStream stream = new AudioInputStream(raw, format, frames);
 
         final Sequencer sequencer = MidiSystem.getSequencer(false);
         sequencer.open();
@@ -184,7 +185,39 @@ public class AudioExporter
 
         try {
             sequencer.start();
-            AudioSystem.write(stream, AudioFileFormat.Type.WAVE, wavFile.toFile());
+
+            final byte[] buffer = new byte[(int) (SAMPLE_RATE * 4 / 10)]; // 0.1 s
+            final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            final long startNanos = System.nanoTime();
+            long got = 0;
+            int n;
+
+            while (got < frames) {
+                final int want = (int) Math.min(buffer.length, (frames - got) * 4);
+                n = raw.read(buffer, 0, want);
+
+                if (n <= 0) {
+                    break;
+                }
+
+                out.write(buffer, 0, n);
+                got += n / 4;
+
+                final long elapsedMs = (System.nanoTime() - startNanos) / 1000000;
+                final long expectedMs = got * 1000 / (long) SAMPLE_RATE;
+                final long sleepMs = expectedMs - elapsedMs;
+
+                if (sleepMs > 0) {
+                    Thread.sleep(sleepMs);
+                }
+            }
+
+            final byte[] data = out.toByteArray();
+            final AudioInputStream fin = new AudioInputStream(
+                    new java.io.ByteArrayInputStream(data),
+                    format,
+                    data.length / 4);
+            AudioSystem.write(fin, AudioFileFormat.Type.WAVE, wavFile.toFile());
         } finally {
             try {
                 sequencer.close();
