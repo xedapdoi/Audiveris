@@ -170,6 +170,7 @@ public class ScorePlayer
     public synchronized void setTempo (int qpm)
     {
         tempoOverride = Math.max(30, Math.min(300, qpm));
+        MidiExporter.setGlobalTempo(tempoOverride);
 
         if (isPlaying() && sequencer != null) {
             try {
