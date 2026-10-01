@@ -185,7 +185,6 @@ public class MergeBooksTest
         System.out.println("MergeBooksTest: structural checks passed");
         Files.deleteIfExists(mergedXml);
     }
-    }
 
     private static int countNotes (Path midi)
         throws Exception
