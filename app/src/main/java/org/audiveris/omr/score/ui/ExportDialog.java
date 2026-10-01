@@ -264,7 +264,8 @@ public class ExportDialog
             final List<String> failed = new ArrayList<>();
 
             try {
-                // 1) Transcribe every target book first
+                // 1) Transcribe every target book first (all valid stubs,
+                // not just the selection which exists only for current book)
                 final List<BookScores> prepared = new ArrayList<>();
                 int bi = 0;
 
@@ -273,8 +274,15 @@ public class ExportDialog
                     logger.info("Export: transcribing book {}/{} ({})", bi, targets.size(), book
                             .getRadix());
 
-                    final List<SheetStub> stubs = book.getValidSelectedStubs();
+                    final List<SheetStub> stubs = book.getValidStubs();
                     final List<Score> scores = new ArrayList<>();
+
+                    if (stubs.isEmpty()) {
+                        failed.add("transcribe:" + book.getRadix() + " (no valid sheets)");
+                        logger.warn("Book {} has no valid sheets, skipped", book.getRadix());
+
+                        continue;
+                    }
 
                     if (!book.transcribe(stubs, scores, false) || scores.isEmpty()) {
                         failed.add("transcribe:" + book.getRadix());
