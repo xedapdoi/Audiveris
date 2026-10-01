@@ -97,7 +97,7 @@ public class ExportDialog
     private final JCheckBox jsonBox = new JCheckBox("JSON (.json)", false);
 
     private final JCheckBox mergeBox = new JCheckBox(
-            "Merge movements into a single file (midi/mp3/wav/json)",
+            "Merge movements into a single file (all formats)",
             true);
 
     //~ Constructors -------------------------------------------------------------------------------
@@ -313,51 +313,85 @@ public class ExportDialog
                     allScores.addAll(bs.scores);
                 }
 
-                // 2) MusicXML per movement (always per-movement, safe names)
+                // 2) MusicXML: single merged file when merging, else per movement
                 if (musicxml) {
-                    int mi = 0;
+                    if (doMerge) {
+                        final Path path = base.resolveSibling(bookName + OMR.SCORE_EXTENSION);
+                        logger.info("Export: merged MusicXML ({} movements) -> {}", allScores
+                                .size(), path);
 
-                    for (BookScores bs : prepared) {
-                        final String prefix = (prepared.size() > 1)
-                                ? (bookName + "-" + safeRadix(bs.book) + "-mvt") : bookName;
+                        try {
+                            ScoreExporter.exportMerged(path, bookName, signed, allScores);
+                            done.add(path.getFileName().toString());
+                        } catch (Exception ex) {
+                            failed.add(path.getFileName().toString());
+                            logger.warn("Merged MusicXML export failed for " + path, ex);
+                        }
+                    } else {
+                        int mi = 0;
 
-                        for (int i = 0; i < bs.scores.size(); i++) {
-                            mi++;
+                        for (BookScores bs : prepared) {
+                            final String prefix = (prepared.size() > 1)
+                                    ? (bookName + "-" + safeRadix(bs.book) + "-mvt")
+                                    : bookName;
 
-                            final Score score = bs.scores.get(i);
-                            final String name = (bs.scores.size() > 1 || prepared.size() > 1)
-                                    ? (prefix + movementNumber(score, i)) : prefix;
-                            final Path path = base.resolveSibling(name + OMR.SCORE_EXTENSION);
-                            logger.info("Export: MusicXML movement {}/{} -> {}", mi, allScores
-                                    .size(), path);
+                            for (int i = 0; i < bs.scores.size(); i++) {
+                                mi++;
 
-                            try {
-                                new ScoreExporter(score).export(path, name, signed, false);
-                                done.add(path.getFileName().toString());
-                            } catch (Exception ex) {
-                                failed.add(path.getFileName().toString());
-                                logger.warn("MusicXML export failed for " + path, ex);
+                                final Score score = bs.scores.get(i);
+                                final String name = (bs.scores.size() > 1 || prepared.size() > 1)
+                                        ? (prefix + movementNumber(score, i)) : prefix;
+                                final Path path = base.resolveSibling(name + OMR.SCORE_EXTENSION);
+                                logger.info("Export: MusicXML movement {}/{} -> {}", mi, allScores
+                                        .size(), path);
+
+                                try {
+                                    new ScoreExporter(score).export(path, name, signed, false);
+                                    done.add(path.getFileName().toString());
+                                } catch (Exception ex) {
+                                    failed.add(path.getFileName().toString());
+                                    logger.warn("MusicXML export failed for " + path, ex);
+                                }
                             }
                         }
                     }
                 }
 
-                // 3) MXL opus, single file per book
+                // 3) MXL opus: single file (per book, or merged across books)
                 if (opus) {
-                    for (BookScores bs : prepared) {
-                        final String name = (prepared.size() > 1)
-                                ? (bookName + "-" + safeRadix(bs.book) + ".opus"
-                                        + OMR.COMPRESSED_SCORE_EXTENSION)
-                                : (bookName + ".opus" + OMR.COMPRESSED_SCORE_EXTENSION);
-                        final Path path = base.resolveSibling(name);
-                        logger.info("Export: MXL opus -> {}", path);
+                    if (doMerge) {
+                        final Path path = base.resolveSibling(
+                                bookName + ".opus" + OMR.COMPRESSED_SCORE_EXTENSION);
+                        logger.info("Export: merged MXL opus ({} movements) -> {}", allScores
+                                .size(), path);
 
                         try {
-                            new OpusExporter(bs.book).export(path, bookName, signed, bs.scores);
+                            new OpusExporter(prepared.get(0).book).export(
+                                    path,
+                                    bookName,
+                                    signed,
+                                    allScores);
                             done.add(path.getFileName().toString());
                         } catch (Exception ex) {
                             failed.add(path.getFileName().toString());
-                            logger.warn("Opus export failed for " + path, ex);
+                            logger.warn("Merged opus export failed for " + path, ex);
+                        }
+                    } else {
+                        for (BookScores bs : prepared) {
+                            final String name = (prepared.size() > 1)
+                                    ? (bookName + "-" + safeRadix(bs.book) + ".opus"
+                                            + OMR.COMPRESSED_SCORE_EXTENSION)
+                                    : (bookName + ".opus" + OMR.COMPRESSED_SCORE_EXTENSION);
+                            final Path path = base.resolveSibling(name);
+                            logger.info("Export: MXL opus -> {}", path);
+
+                            try {
+                                new OpusExporter(bs.book).export(path, bookName, signed, bs.scores);
+                                done.add(path.getFileName().toString());
+                            } catch (Exception ex) {
+                                failed.add(path.getFileName().toString());
+                                logger.warn("Opus export failed for " + path, ex);
+                            }
                         }
                     }
                 }

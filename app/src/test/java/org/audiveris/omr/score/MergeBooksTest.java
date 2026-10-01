@@ -126,6 +126,37 @@ public class MergeBooksTest
 
         assertTrue("merged length " + end, end > 0);
         Files.deleteIfExists(merged);
+
+        // Merged single-file MusicXML: well-formed, measure count = sum.
+        // (External DTD loading disabled: offline environment.)
+        final javax.xml.parsers.DocumentBuilderFactory factory = javax.xml.parsers.DocumentBuilderFactory
+                .newInstance();
+        factory.setValidating(false);
+        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        int singleMeasures = 0;
+
+        for (Score score : allScores) {
+            final Path single = Files.createTempFile("single-", ".musicxml");
+            new ScoreExporter(score).export(single, "single", true, false);
+            singleMeasures += factory.newDocumentBuilder().parse(single.toFile())
+                    .getElementsByTagName("measure").getLength();
+            Files.deleteIfExists(single);
+        }
+
+        final Path mergedXml = Files.createTempFile("merged-", ".musicxml");
+        ScoreExporter.exportMerged(mergedXml, "merged", true, allScores);
+
+        final org.w3c.dom.Document doc = factory.newDocumentBuilder().parse(
+                mergedXml.toFile());
+        final int measures = doc.getElementsByTagName("measure").getLength();
+        final int divisions = doc.getElementsByTagName("divisions").getLength();
+        System.out.println("MergeBooksTest: single measures=" + singleMeasures + " merged measures="
+                + measures + " divisions=" + divisions);
+        assertEquals(singleMeasures, measures);
+        assertTrue("divisions present", divisions > 0);
+        Files.deleteIfExists(mergedXml);
     }
 
     private static int countNotes (Path midi)

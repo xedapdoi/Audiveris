@@ -35,6 +35,8 @@ import org.w3c.dom.Node;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -162,6 +164,39 @@ public class ScoreExporter
         try (OutputStream os = new FileOutputStream(path.toString())) {
             export(os, signed, scoreName, compressed);
             logger.info("Score {} exported to {}", scoreName, path);
+        }
+    }
+
+    //--------------//
+    // exportMerged //
+    //--------------//
+    /**
+     * Export several scores (movements) into a single plain MusicXML file,
+     * measures concatenated part by part (see {@link ScoreMerger}).
+     *
+     * @param path      full target path to write (cannot be null)
+     * @param scoreName logical score name, used for logging
+     * @param signed    should we inject ProxyMusic signature?
+     * @param scores    scores in play order
+     * @throws Exception if anything goes wrong
+     */
+    public static void exportMerged (Path path,
+                                     String scoreName,
+                                     boolean signed,
+                                     List<Score> scores)
+        throws Exception
+    {
+        final List<ScorePartwise> movements = new ArrayList<>();
+
+        for (Score score : scores) {
+            movements.add(PartwiseBuilder.build(score));
+        }
+
+        final ScorePartwise merged = ScoreMerger.merge(movements);
+
+        try (OutputStream os = new FileOutputStream(path.toString())) {
+            Marshalling.marshal(merged, os, signed, 2);
+            logger.info("Merged score {} exported to {}", scoreName, path);
         }
     }
 }
