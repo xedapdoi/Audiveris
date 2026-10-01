@@ -58,24 +58,27 @@ public class ScoreMerger
     //-------//
     /**
      * Merge movement partwise scores into the first one (modified in place).
+     * All movements must have the same part count and order (same instrumentation);
+     * part-list stays valid as-is in that case.
      *
      * @param movements partwise scores in play order (at least one)
      * @return the first score, holding all measures
+     * @throws IllegalStateException on part count mismatch
      */
     public static ScorePartwise merge (List<ScorePartwise> movements)
     {
         final ScorePartwise base = movements.get(0);
+        final int partCount = base.getPart().size();
 
         for (int k = 1; k < movements.size(); k++) {
             final ScorePartwise next = movements.get(k);
             final List<ScorePartwise.Part> baseParts = base.getPart();
             final List<ScorePartwise.Part> nextParts = next.getPart();
 
-            if (nextParts.size() != baseParts.size()) {
-                logger.warn(
-                        "Part count mismatch ({} vs {}), appending anyway",
-                        baseParts.size(),
-                        nextParts.size());
+            if (nextParts.size() != partCount) {
+                throw new IllegalStateException(
+                        "Part count mismatch (" + partCount + " vs " + nextParts.size()
+                                + "), cannot merge into one score-partwise file");
             }
 
             for (int i = 0; i < nextParts.size(); i++) {
@@ -87,13 +90,7 @@ public class ScoreMerger
                 }
 
                 ensureDivisions(nextMeasures.get(0), divisionsOf(nextParts.get(i)));
-
-                if (i < baseParts.size()) {
-                    baseParts.get(i).getMeasure().addAll(nextMeasures);
-                } else {
-                    // Movement with extra parts: append the whole part
-                    baseParts.add(nextParts.get(i));
-                }
+                baseParts.get(i).getMeasure().addAll(nextMeasures);
             }
         }
 

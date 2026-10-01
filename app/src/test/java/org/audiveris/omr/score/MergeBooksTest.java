@@ -156,7 +156,35 @@ public class MergeBooksTest
                 + measures + " divisions=" + divisions);
         assertEquals(singleMeasures, measures);
         assertTrue("divisions present", divisions > 0);
+
+        // Structural validity for third-party readers (score-partwise root)
+        assertEquals("score-partwise", doc.getDocumentElement().getNodeName());
+
+        final int partListParts = ((org.w3c.dom.Element) doc.getElementsByTagName("part-list")
+                .item(0)).getElementsByTagName("score-part").getLength();
+        final int scoreParts = doc.getElementsByTagName("part").getLength();
+        System.out.println("MergeBooksTest: part-list=" + partListParts + " parts=" + scoreParts);
+        assertEquals(partListParts, scoreParts);
+
+        // Every measure numbered sequentially per part
+        final org.w3c.dom.NodeList partNodes = doc.getElementsByTagName("part");
+
+        for (int p = 0; p < partNodes.getLength(); p++) {
+            final org.w3c.dom.Element partEl = (org.w3c.dom.Element) partNodes.item(p);
+            final org.w3c.dom.NodeList measureNodes = partEl.getElementsByTagName("measure");
+
+            for (int m = 0; m < measureNodes.getLength(); m++) {
+                final org.w3c.dom.Element measureEl = (org.w3c.dom.Element) measureNodes.item(m);
+                assertEquals(
+                        "part " + p + " measure index " + m,
+                        String.valueOf(m + 1),
+                        measureEl.getAttribute("number"));
+            }
+        }
+
+        System.out.println("MergeBooksTest: structural checks passed");
         Files.deleteIfExists(mergedXml);
+    }
     }
 
     private static int countNotes (Path midi)
