@@ -257,20 +257,25 @@ public class MidiExporter
     public Sequence buildSequence (List<Score> scores)
         throws Exception
     {
-        final List<Sequence> sequences = new ArrayList<>();
+        if (scores.size() > 1 && !isCrossScoreRepeat()) {
+            // Legacy mode: expand repeats per score, then concatenate
+            final List<Sequence> sequences = new ArrayList<>();
 
-        for (Score s : scores) {
-            final MidiExporter one = new MidiExporter(s);
-            one.setTempoOverride(tempoOverride != null ? tempoOverride : globalTempoOverride);
-            sequences.add(one.buildSingle());
+            for (Score s : scores) {
+                final MidiExporter one = new MidiExporter(s);
+                one.setTempoOverride(tempoOverride != null ? tempoOverride : globalTempoOverride);
+                sequences.add(one.buildSingle());
 
-            for (Map.Entry<Integer, Long> entry : one.getChordTicks().entrySet()) {
-                chordTicks.putIfAbsent(entry.getKey(), entry.getValue() + sequencesOffset(
-                        sequences));
+                for (Map.Entry<Integer, Long> entry : one.getChordTicks().entrySet()) {
+                    chordTicks.putIfAbsent(entry.getKey(), entry.getValue() + sequencesOffset(
+                            sequences));
+                }
             }
+
+            return mergeSequences(sequences);
         }
 
-        return mergeSequences(sequences);
+        return buildScores(scores);
     }
 
     //--------------------//
@@ -408,7 +413,25 @@ public class MidiExporter
     private Sequence buildSingle ()
         throws Exception
     {
-        tempoQpm = findTempo();
+        return buildScores(java.util.Collections.singletonList(score));
+    }
+
+    //-----------------//
+    // buildScores //
+    //-----------------//
+    /**
+     * Build one continuous MIDI sequence for the provided scores: repeat
+     * contexts span score boundaries, so a repeat starting on one page and
+     * closing on the next plays back correctly.
+     *
+     * @param scores scores in play order
+     * @return sequence
+     * @throws Exception if anything goes wrong
+     */
+    private Sequence buildScores (List<Score> scores)
+        throws Exception
+    {
+        tempoQpm = findTempo(scores);
         logger.info("Exporting MIDI at {} qpm", tempoQpm);
 
         final Sequence sequence = new Sequence(Sequence.PPQ, PPQ);
@@ -424,20 +447,25 @@ public class MidiExporter
         final Map<String, List<NoteEvent>> trackEvents = new TreeMap<>();
         int channelAlloc = 0;
 
-        // Play order with repeats expanded (volta-aware)
-        final List<MeasureStack> playOrder = RepeatExpander.expand(collectStacks());
-        logger.info("Play order: {} stacks ({} unique)", playOrder.size(), collectStacks().size());
+        // Play order with repeats expanded (volta-aware, across scores)
+        final List<MeasureStack> playOrder = RepeatExpander.expand(collectStacks(scores));
+        logger.info(
+                "Play order: {} stacks ({} unique)",
+                playOrder.size(),
+                collectStacks(scores).size());
 
-        // Stack -> (part -> measure) index for the whole score
+        // Stack -> (part -> measure) index for all scores
         final Map<MeasureStack, Map<Part, Measure>> scoreMap = new LinkedHashMap<>();
 
-        for (Page page : score.getPages()) {
-            for (SystemInfo system : page.getSystems()) {
-                for (Part part : system.getParts()) {
-                    for (Measure measure : part.getMeasures()) {
-                        scoreMap
-                                .computeIfAbsent(measure.getStack(), s -> new LinkedHashMap<>())
-                                .put(part, measure);
+        for (Score s : scores) {
+            for (Page page : s.getPages()) {
+                for (SystemInfo system : page.getSystems()) {
+                    for (Part part : system.getParts()) {
+                        for (Measure measure : part.getMeasures()) {
+                            scoreMap
+                                    .computeIfAbsent(measure.getStack(), st -> new LinkedHashMap<>())
+                                    .put(part, measure);
+                        }
                     }
                 }
             }
@@ -564,17 +592,20 @@ public class MidiExporter
     // collectStacks //
     //----------------//
     /**
-     * Collect the measure stacks of the score in score order.
+     * Collect the measure stacks of the provided scores in score order.
      *
+     * @param scores scores in play order
      * @return ordered stacks
      */
-    private List<MeasureStack> collectStacks ()
+    private static List<MeasureStack> collectStacks (List<Score> scores)
     {
         final List<MeasureStack> stacks = new ArrayList<>();
 
-        for (Page page : score.getPages()) {
-            for (SystemInfo system : page.getSystems()) {
-                stacks.addAll(system.getStacks());
+        for (Score s : scores) {
+            for (Page page : s.getPages()) {
+                for (SystemInfo system : page.getSystems()) {
+                    stacks.addAll(system.getStacks());
+                }
             }
         }
 
@@ -612,7 +643,7 @@ public class MidiExporter
      *
      * @return quarters per minute
      */
-    private int findTempo ()
+    private int findTempo (List<Score> scores)
     {
         if (tempoOverride != null && tempoOverride > 0) {
             return tempoOverride;
@@ -621,23 +652,26 @@ public class MidiExporter
         if (globalTempoOverride != null && globalTempoOverride > 0) {
             return globalTempoOverride;
         }
-        for (Page page : score.getPages()) {
-            for (SystemInfo system : page.getSystems()) {
-                final SIGraph sig = system.getSig();
-                final List<Inter> metros = sig.inters(MetronomeInter.class);
 
-                if (!metros.isEmpty()) {
-                    for (Inter inter : metros) {
-                        try {
-                            final int qpm = ((MetronomeInter) inter).getQuartersPerMinute();
+        for (Score s : scores) {
+            for (Page page : s.getPages()) {
+                for (SystemInfo system : page.getSystems()) {
+                    final SIGraph sig = system.getSig();
+                    final List<Inter> metros = sig.inters(MetronomeInter.class);
 
-                            if (qpm > 0) {
-                                logger.info("Using metronome tempo {} qpm", qpm);
+                    if (!metros.isEmpty()) {
+                        for (Inter inter : metros) {
+                            try {
+                                final int qpm = ((MetronomeInter) inter).getQuartersPerMinute();
 
-                                return qpm;
+                                if (qpm > 0) {
+                                    logger.info("Using metronome tempo {} qpm", qpm);
+
+                                    return qpm;
+                                }
+                            } catch (Exception ex) {
+                                logger.debug("Unusable metronome {}", inter, ex);
                             }
-                        } catch (Exception ex) {
-                            logger.debug("Unusable metronome {}", inter, ex);
                         }
                     }
                 }
@@ -1145,6 +1179,20 @@ public class MidiExporter
                 "qpm",
                 DEFAULT_QPM,
                 "Default playback/export tempo when no metronome mark is found");
+
+        private final Constant.Boolean crossScoreRepeat = new Constant.Boolean(
+                true,
+                "Expand repeats across scores of one book (single continuous piece)");
+    }
+
+    /**
+     * Report whether repeats expand across scores of one book.
+     *
+     * @return true if cross-score expansion is enabled
+     */
+    public static boolean isCrossScoreRepeat ()
+    {
+        return constants.crossScoreRepeat.isSet();
     }
 
     //--------//

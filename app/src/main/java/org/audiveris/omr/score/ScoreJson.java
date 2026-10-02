@@ -126,7 +126,30 @@ public class ScoreJson
                                        Measure measure,
                                        Integer fifths)
     {
-        sb.append("{\"voices\":[");
+        final var stack = measure.getStack();
+        final boolean repeatLeft = stack != null && stack.isRepeat(
+                org.audiveris.omr.util.HorizontalSide.LEFT);
+        final boolean repeatRight = stack != null && stack.isRepeat(
+                org.audiveris.omr.util.HorizontalSide.RIGHT);
+        final java.util.Set<Integer> endings = (stack != null)
+                ? RepeatExpander.endingNumbers(stack) : java.util.Collections.emptySet();
+
+        sb.append("{\"repeatLeft\":").append(repeatLeft);
+        sb.append(",\"repeatRight\":").append(repeatRight);
+        sb.append(",\"ending\":[");
+
+        boolean firstEnding = true;
+
+        for (int number : endings) {
+            if (!firstEnding) {
+                sb.append(',');
+            }
+
+            firstEnding = false;
+            sb.append(number);
+        }
+
+        sb.append("],\"voices\":[");
 
         boolean firstVoice = true;
 

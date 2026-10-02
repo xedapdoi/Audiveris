@@ -43,8 +43,6 @@ import org.slf4j.LoggerFactory;
 
 import java.awt.Point;
 import java.awt.Rectangle;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -91,7 +89,6 @@ public class ScorePlayer
 
     /** Index of the movement being played. */
     private int queueIndex;
-
     /** Explicit tempo override in qpm, null means exporter default. */
     private Integer tempoOverride;
 
@@ -256,7 +253,8 @@ public class ScorePlayer
     // play //
     //------//
     /**
-     * Play the scores of the provided book in sequence.
+     * Play the scores of the provided book as one continuous performance
+     * (repeats may span score boundaries).
      * If paused, playback resumes from the paused position.
      * Otherwise playback (re)starts from the selected chord if any,
      * else from the beginning.
@@ -287,26 +285,24 @@ public class ScorePlayer
         try {
             queue.clear();
 
-            for (Score score : book.getScores()) {
-                final MidiExporter exporter = new MidiExporter(score);
-                exporter.setTempoOverride(tempoOverride);
+            final List<Score> scores = List.copyOf(book.getScores());
+            final MidiExporter exporter = new MidiExporter(scores.get(0));
+            exporter.setTempoOverride(tempoOverride);
+            final Sequence sequence = exporter.buildSequence(scores);
 
-                final Path midiFile = Files.createTempFile("audiveris-play-", ".mid");
-                midiFile.toFile().deleteOnExit();
-                exporter.export(midiFile);
+            final Movement movement = new Movement();
+            movement.tempoQpm = exporter.getTempoQpm();
+            movement.chordTicks.putAll(exporter.getChordTicks());
 
-                final Movement movement = new Movement();
-                movement.score = score;
-                movement.midiFile = midiFile;
-                movement.chordTicks = exporter.getChordTicks();
-                movement.tempoQpm = exporter.getTempoQpm();
+            for (Score score : scores) {
                 indexChords(score, movement);
-                queue.add(movement);
             }
 
+            queue.add(movement);
             queueIndex = 0;
+
             final long startTick = seekTick(book);
-            startMovement(queueIndex, startTick);
+            startMovement(queueIndex, startTick, sequence);
         } catch (Exception ex) {
             logger.warn("Could not play book", ex);
             stop();
@@ -371,11 +367,11 @@ public class ScorePlayer
      * Start playing the queued movement at the provided tick.
      */
     private void startMovement (int index,
-                                long startTick)
+                                long startTick,
+                                Sequence sequence)
         throws Exception
     {
         final Movement movement = queue.get(index);
-        final Sequence sequence = MidiSystem.getSequence(movement.midiFile.toFile());
 
         synthesizer = MidiSystem.getSynthesizer();
         synthesizer.open();
@@ -410,11 +406,7 @@ public class ScorePlayer
         }
 
         sequencer.start();
-        logger.info(
-                "Playing movement {}/{} at {} qpm",
-                index + 1,
-                queue.size(),
-                movement.tempoQpm);
+        logger.info("Playing book at {} qpm", movement.tempoQpm);
     }
 
     //-------------//
@@ -422,7 +414,7 @@ public class ScorePlayer
     //-------------//
     /**
      * Called on every end-of-track meta event. Only the very end of the
-     * sequence (all tracks done) moves to the next movement or stops.
+     * sequence (all tracks done) stops playback.
      */
     private void onTrackEnd ()
     {
@@ -437,54 +429,7 @@ public class ScorePlayer
             return;
         }
 
-        synchronized (this) {
-            if (sequencer != seq) {
-                return; // Stopped meanwhile
-            }
-
-            if (queueIndex + 1 < queue.size()) {
-                queueIndex++;
-
-                try {
-                    closeMidi();
-                    startMovement(queueIndex, 0);
-                } catch (Exception ex) {
-                    logger.warn("Could not play next movement", ex);
-                    stop();
-                }
-            } else {
-                stop();
-            }
-        }
-    }
-
-    //------------//
-    // closeMidi //
-    //------------//
-    /**
-     * Close current MIDI devices, keeping the queue for the next movement.
-     */
-    private void closeMidi ()
-    {
-        if (sequencer != null) {
-            try {
-                sequencer.close();
-            } catch (Exception ex) {
-                logger.debug("Error closing sequencer", ex);
-            } finally {
-                sequencer = null;
-            }
-        }
-
-        if (synthesizer != null) {
-            try {
-                synthesizer.close();
-            } catch (Exception ex) {
-                logger.debug("Error closing synthesizer", ex);
-            } finally {
-                synthesizer = null;
-            }
-        }
+        stop();
     }
 
     //-----------//
@@ -751,13 +696,9 @@ public class ScorePlayer
     /** One queued movement: MIDI file, chord index and chord ticks. */
     private static class Movement
     {
-        Score score;
-
-        Path midiFile;
-
         final Map<Integer, AbstractChordInter> chords = new TreeMap<>();
 
-        Map<Integer, Long> chordTicks = new TreeMap<>();
+        final Map<Integer, Long> chordTicks = new TreeMap<>();
 
         int tempoQpm;
     }
