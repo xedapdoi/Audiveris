@@ -86,6 +86,8 @@ public class RepeatExpander
      */
     public static List<MeasureStack> expand (List<MeasureStack> stacks)
     {
+        assignEndingNumbers(stacks);
+
         final List<MeasureStack> order = new ArrayList<>();
         final Deque<RepeatCtx> pile = new ArrayDeque<>();
         int i = 0;
@@ -150,6 +152,84 @@ public class RepeatExpander
         return order;
     }
 
+    //----------------------//
+    // assignEndingNumbers //
+    //----------------------//
+    /**
+     * Assign sequential volta numbers to endings lacking any number, in stack
+     * order (same convention as the MusicXML exporter: first ending is "1",
+     * next "2", ...). Numbering restarts at every repeat barline. This mutates
+     * the model exactly like the exporter inference does.
+     *
+     * @param stacks stacks in score order
+     */
+    static void assignEndingNumbers (List<MeasureStack> stacks)
+    {
+        int next = 1;
+
+        for (MeasureStack stack : stacks) {
+            if (stack.isRepeat(LEFT)) {
+                next = 1;
+            }
+
+            boolean assigned = false;
+
+            for (EndingInter ending : endingsOf(stack)) {
+                try {
+                    if (ending.getExportedNumber() == null && ending.getNumber() == null) {
+                        ending.setNumber(String.valueOf(next));
+                        assigned = true;
+                    }
+                } catch (Exception ex) {
+                    logger.debug("Could not number ending", ex);
+                }
+            }
+
+            if (assigned) {
+                next++;
+            }
+
+            if (stack.isRepeat(RIGHT)) {
+                next = 1;
+            }
+        }
+    }
+
+    //------------//
+    // endingsOf //
+    //------------//
+    /**
+     * Report the volta endings attached to the provided stack, unioned over
+     * all parts.
+     */
+    static List<EndingInter> endingsOf (MeasureStack stack)
+    {
+        final List<EndingInter> endings = new ArrayList<>();
+
+        try {
+            final SystemInfo system = stack.getSystem();
+
+            if (system == null) {
+                return endings;
+            }
+
+            for (Part part : system.getParts()) {
+                for (Measure measure : part.getMeasures()) {
+                    if (measure.getStack() != stack) {
+                        continue;
+                    }
+
+                    collectEnding(measure.getLeftPartBarline(), LEFT, endings);
+                    collectEnding(measure.getRightPartBarline(), RIGHT, endings);
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("Could not read endings", ex);
+        }
+
+        return endings;
+    }
+
     //----------------//
     // endingNumbers //
     //----------------//
@@ -164,25 +244,24 @@ public class RepeatExpander
     {
         final Set<Integer> numbers = new TreeSet<>();
 
-        try {
-            final SystemInfo system = stack.getSystem();
+        for (EndingInter ending : endingsOf(stack)) {
+            try {
+                String value = ending.getExportedNumber();
 
-            if (system == null) {
-                return numbers;
-            }
-
-            for (Part part : system.getParts()) {
-                for (Measure measure : part.getMeasures()) {
-                    if (measure.getStack() != stack) {
-                        continue;
-                    }
-
-                    collectEnding(measure.getLeftPartBarline(), LEFT, numbers);
-                    collectEnding(measure.getRightPartBarline(), RIGHT, numbers);
+                if (value == null) {
+                    value = ending.getNumber();
                 }
+
+                if (value != null) {
+                    for (String token : value.split("[^0-9]+")) {
+                        if (!token.isEmpty()) {
+                            numbers.add(Integer.parseInt(token));
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                logger.debug("Could not read ending number", ex);
             }
-        } catch (Exception ex) {
-            logger.debug("Could not read endings", ex);
         }
 
         return numbers;
@@ -191,9 +270,12 @@ public class RepeatExpander
     //----------------//
     // collectEnding //
     //----------------//
+    /**
+     * Collect the volta ending attached to a barline side, if any.
+     */
     private static void collectEnding (PartBarline barline,
                                        org.audiveris.omr.util.HorizontalSide side,
-                                       Set<Integer> numbers)
+                                       List<EndingInter> endings)
     {
         if (barline == null) {
             return;
@@ -202,25 +284,11 @@ public class RepeatExpander
         try {
             final EndingInter ending = barline.getEnding(side);
 
-            if (ending == null) {
-                return;
-            }
-
-            String value = ending.getExportedNumber();
-
-            if (value == null) {
-                value = ending.getNumber();
-            }
-
-            if (value != null) {
-                for (String token : value.split("[^0-9]+")) {
-                    if (!token.isEmpty()) {
-                        numbers.add(Integer.parseInt(token));
-                    }
-                }
+            if (ending != null && !endings.contains(ending)) {
+                endings.add(ending);
             }
         } catch (Exception ex) {
-            logger.debug("Could not read ending number", ex);
+            logger.debug("Could not read ending", ex);
         }
     }
 
