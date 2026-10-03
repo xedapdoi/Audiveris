@@ -101,6 +101,13 @@ public class ScorePlayer
     /** Listeners notified of each sounding chord (preview playhead). */
     private final List<Consumer<AbstractChordInter>> chordListeners = new CopyOnWriteArrayList<>();
 
+    /** Set when the playhead was once placed (for the confirmation log). */
+    private volatile boolean playheadLogged;
+
+    /** Playhead diagnostics already logged (once per message). */
+    private static final java.util.Set<String> loggedMessages = java.util.Collections
+            .newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
     //~ Constructors -------------------------------------------------------------------------------
 
     private ScorePlayer ()
@@ -284,6 +291,7 @@ public class ScorePlayer
 
         try {
             queue.clear();
+            playheadLogged = false;
 
             final List<Score> scores = List.copyOf(book.getScores());
             final MidiExporter exporter = new MidiExporter(scores.get(0));
@@ -574,6 +582,8 @@ public class ScorePlayer
         final AbstractChordInter chord = movement.chords.get(id);
 
         if (chord == null) {
+            logOnce("No chord for playhead id " + id);
+
             return;
         }
 
@@ -586,45 +596,122 @@ public class ScorePlayer
                 }
             }
 
+            final Rectangle rect = playheadRect(chord);
+
+            if (rect == null) {
+                logOnce("Could not place playhead for chord " + id);
+
+                return;
+            }
+
             try {
-                final SystemInfo system = chord.getSig().getSystem();
-                final List<Part> parts = system.getParts();
-
-                if (parts.isEmpty()) {
-                    return;
-                }
-
-                final Point center = chord.getCenter();
-                final List<Staff> topStaves = parts.get(0).getStaves();
-                final List<Staff> bottomStaves = parts.get(parts.size() - 1).getStaves();
-
-                if (topStaves.isEmpty() || bottomStaves.isEmpty()) {
-                    return;
-                }
-
-                final double topY = topStaves.get(0).getLines().get(0).yAt(center.x);
-                final List<LineInfo> bottomLines = bottomStaves.get(bottomStaves.size() - 1)
-                        .getLines();
-                final double bottomY = bottomLines.get(bottomLines.size() - 1).yAt(center.x);
-                final int margin = system.getSheet().getScale().getInterline() / 2;
-                final Sheet sheet = system.getSheet();
+                final Sheet sheet = chord.getSig().getSystem().getSheet();
                 final SheetAssembly assembly = sheet.getStub().getAssembly();
 
                 if (assembly == null || assembly.getRubber() == null) {
+                    logOnce("No rubber for playhead on sheet");
+
                     return;
                 }
 
-                assembly.getRubber().showPlayhead(
-                        new Rectangle(
-                                center.x - 1,
-                                (int) Math.round(topY) - margin,
-                                3,
-                                (int) Math.round(bottomY - topY) + 2 * margin));
+                assembly.getRubber().showPlayhead(rect);
                 playheadRubber = assembly.getRubber();
+
+                if (!playheadLogged) {
+                    playheadLogged = true;
+                    logger.info("Playhead showing at {}", rect);
+                }
             } catch (Exception ex) {
-                logger.debug("Could not move playhead to chord {}", id, ex);
+                logOnce("Could not move playhead to chord " + id + ": " + ex);
             }
         });
+    }
+
+    //--------------//
+    // playheadRect //
+    //--------------//
+    /**
+     * Compute the playhead rectangle for a chord, with fallbacks so it never
+     * fails silently: staff span first, chord bounds otherwise.
+     *
+     * @param chord the sounding chord
+     * @return model rectangle, or null if nothing usable
+     */
+    private static Rectangle playheadRect (AbstractChordInter chord)
+    {
+        try {
+            final Point center = chord.getCenter();
+            final SystemInfo system = chord.getSig().getSystem();
+
+            if (system != null) {
+                final List<Part> parts = system.getParts();
+
+                if (!parts.isEmpty()) {
+                    final List<Staff> topStaves = parts.get(0).getStaves();
+                    final List<Staff> bottomStaves = parts.get(parts.size() - 1).getStaves();
+
+                    if (!topStaves.isEmpty() && !bottomStaves.isEmpty()) {
+                        final List<LineInfo> topLines = topStaves.get(0).getLines();
+                        final List<LineInfo> bottomLines = bottomStaves
+                                .get(bottomStaves.size() - 1).getLines();
+
+                        if (!topLines.isEmpty() && !bottomLines.isEmpty()) {
+                            final double topY = topLines.get(0).yAt(center.x);
+                            final double bottomY = bottomLines.get(bottomLines.size() - 1)
+                                    .yAt(center.x);
+
+                            if (bottomY > topY) {
+                                final int margin = nullSafeInterline(system);
+                                return new Rectangle(
+                                        center.x - 1,
+                                        (int) Math.round(topY) - margin,
+                                        3,
+                                        (int) Math.round(bottomY - topY) + 2 * margin);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("Staff-span playhead failed, using chord bounds", ex);
+        }
+
+        try {
+            final Rectangle box = chord.getBounds();
+
+            if (box != null && box.width > 0 && box.height > 0) {
+                return new Rectangle(box.x - 2, box.y - 4, 4, box.height + 8);
+            }
+        } catch (Exception ex) {
+            logger.debug("Chord-bounds playhead failed", ex);
+        }
+
+        return null;
+    }
+
+    //--------------------//
+    // nullSafeInterline //
+    //--------------------//
+    private static int nullSafeInterline (SystemInfo system)
+    {
+        try {
+            return system.getSheet().getScale().getInterline() / 2;
+        } catch (Exception ex) {
+            return 10;
+        }
+    }
+
+    //---------//
+    // logOnce //
+    //---------//
+    /**
+     * Log a playhead diagnostic once per session (avoids per-chord spam).
+     */
+    private static void logOnce (String message)
+    {
+        if (loggedMessages.add(message)) {
+            logger.warn("Playhead: {}", message);
+        }
     }
 
     //--------------//
