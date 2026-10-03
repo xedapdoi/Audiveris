@@ -448,6 +448,7 @@ public class MidiExporter
         final Map<String, int[]> timeSigs = new TreeMap<>(); // trackKey -> {num, den}
         final Map<String, String> clefs = new TreeMap<>(); // trackKey -> G/F/C/?
         final Map<String, List<NoteEvent>> trackEvents = new TreeMap<>();
+        final Map<String, Integer> keySigs = new TreeMap<>(); // logicalId -> fifths
         int channelAlloc = 0;
 
         // Play order with repeats expanded (volta-aware, across scores)
@@ -495,9 +496,23 @@ public class MidiExporter
                         ? logical.getMidiProgram() : 0;
                 final Measure measure = partMap.get(part);
 
+                // Running key signature per staff track (carries over measures)
+                if (measure != null && measure.hasKeys()) {
+                    try {
+                        final KeyInter key = measure.getKey(0);
+
+                        if (key != null && key.getFifths() != null) {
+                            keySigs.put(logicalId + ":*", key.getFifths());
+                        }
+                    } catch (Exception ex) {
+                        logger.debug("No usable key in measure", ex);
+                    }
+                }
+
                 // Per-staff dispatch within the measure (empty when missing)
                 final Map<Integer, List<VoiceEntry>> byStaff = (measure != null)
-                        ? dispatchByStaff(measure) : Collections.emptyMap();
+                        ? dispatchByStaff(measure, keySigs.get(logicalId + ":*")) : Collections
+                                .emptyMap();
                 final int staffCount = Math.max(1, part.getStaves().size());
 
                 for (int staffIndex = 0; staffIndex < staffCount; staffIndex++) {
@@ -691,24 +706,13 @@ public class MidiExporter
      * Group the sounding chords of a measure by staff index in part.
      *
      * @param measure the measure to dispatch
+     * @param fifths  running key signature (carried across measures, may be null)
      * @return map of staff index to voice entries
      */
-    private static Map<Integer, List<VoiceEntry>> dispatchByStaff (Measure measure)
+    private static Map<Integer, List<VoiceEntry>> dispatchByStaff (Measure measure,
+                                                                   Integer fifths)
     {
         final Map<Integer, List<VoiceEntry>> map = new TreeMap<>();
-        Integer fifths = null;
-
-        if (measure.hasKeys()) {
-            try {
-                final KeyInter key = measure.getKey(0);
-
-                if (key != null && key.getFifths() != null) {
-                    fifths = key.getFifths();
-                }
-            } catch (Exception ex) {
-                logger.debug("No usable key in {}", measure, ex);
-            }
-        }
 
         for (Voice voice : measure.getVoices()) {
             if (voice.isMeasureRest()) {
