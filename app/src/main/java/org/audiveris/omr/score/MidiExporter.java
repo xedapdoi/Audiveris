@@ -959,7 +959,7 @@ public class MidiExporter
 
         if (!removed.isEmpty()) {
             events.removeIf(removed::contains);
-            logger.debug("Merged {} tied note events", removed.size());
+            logger.info("Merged {} tied note events", removed.size());
         }
     }
 
