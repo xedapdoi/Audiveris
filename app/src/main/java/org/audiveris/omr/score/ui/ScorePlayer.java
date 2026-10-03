@@ -22,6 +22,8 @@
 package org.audiveris.omr.score.ui;
 
 import org.audiveris.omr.score.MidiExporter;
+import org.audiveris.omr.constant.Constant;
+import org.audiveris.omr.constant.ConstantSet;
 import org.audiveris.omr.score.Page;
 import org.audiveris.omr.score.Score;
 import org.audiveris.omr.sheet.Book;
@@ -74,6 +76,8 @@ public class ScorePlayer
     //~ Static fields/initializers -----------------------------------------------------------------
 
     private static final Logger logger = LoggerFactory.getLogger(ScorePlayer.class);
+
+    private static final Constants constants = new Constants();
 
     /** Singleton instance. */
     private static volatile ScorePlayer INSTANCE;
@@ -399,7 +403,16 @@ public class ScorePlayer
 
                 if (text.startsWith("chord=")) {
                     try {
-                        movePlayhead(movement, Integer.parseInt(text.substring(6)));
+                        final int id = Integer.parseInt(text.substring(6));
+
+                        if (constants.playbackDebug.isSet()) {
+                            logger.info(
+                                    "Playback marker tick={} chord={}",
+                                    sequencer.getTickPosition(),
+                                    id);
+                        }
+
+                        movePlayhead(movement, id);
                     } catch (NumberFormatException ignored) {
                         // Ignore
                     }
@@ -816,6 +829,17 @@ public class ScorePlayer
     }
 
     //~ Inner Classes ------------------------------------------------------------------------------
+
+    //-----------//
+    // Constants //
+    //-----------//
+    private static class Constants
+            extends ConstantSet
+    {
+        private final Constant.Boolean playbackDebug = new Constant.Boolean(
+                false,
+                "Log every playback marker (tick and chord) for diagnosis");
+    }
 
     //----------//
     // Movement //
