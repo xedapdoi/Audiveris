@@ -103,6 +103,9 @@ public class MidiExporter
     /** Strum gap between two notes of an arpeggiated chord, in milliseconds. */
     private static final int STRUM_GAP_MS = 35;
 
+    /** Tick tolerance when matching tied note-off to note-on (rounding). */
+    private static final int TIE_TICK_TOLERANCE = 2;
+
     /** Default velocity. */
     private static final int VELOCITY = 80;
 
@@ -921,39 +924,42 @@ public class MidiExporter
     //-----------//
     /**
      * Merge tied notes within one track: a note-on whose head is tied from a
-     * previous head, coinciding with that pitch note-off, disappears into the
-     * sustained note (no re-articulation, extended duration).
+     * previous head, coinciding (within rounding tolerance) with that pitch
+     * note-off, disappears into the sustained note (no re-articulation,
+     * extended duration). The tie gate keeps this musically safe: untied
+     * repeated notes are never merged.
      *
      * @param events track events (modified in place)
      */
     private void mergeTies (List<NoteEvent> events)
     {
-        final java.util.Set<Long> offs = new java.util.HashSet<>();
+        // Index offs by (pitch, tick) for exact matches first
+        final java.util.Map<Long, List<NoteEvent>> offsByKey = new java.util.HashMap<>();
 
         for (NoteEvent event : events) {
             if (!event.on) {
-                offs.add((((long) event.pitch) << 32) | (event.tick & 0xFFFFFFFFL));
+                offsByKey
+                        .computeIfAbsent(key(event.pitch, event.tick), k -> new ArrayList<>())
+                        .add(event);
             }
         }
 
         final java.util.Set<NoteEvent> removed = java.util.Collections.newSetFromMap(
                 new java.util.IdentityHashMap<>());
+        int tiedUnmatched = 0;
 
         for (NoteEvent event : events) {
-            if (event.on && event.headId != 0 && isTieTarget(event.headId)
-                    && offs.contains((((long) event.pitch) << 32) | (event.tick & 0xFFFFFFFFL))) {
-                // Remove this re-articulation...
+            if (!event.on || event.headId == 0 || !isTieTarget(event.headId)) {
+                continue;
+            }
+
+            final NoteEvent off = findSwallowedOff(event, offsByKey, removed);
+
+            if (off != null) {
                 removed.add(event);
-
-                // ...and the matching note-off it swallows
-                for (NoteEvent off : events) {
-                    if (!off.on && !removed.contains(off) && off.pitch == event.pitch
-                            && off.tick == event.tick) {
-                        removed.add(off);
-
-                        break;
-                    }
-                }
+                removed.add(off);
+            } else {
+                tiedUnmatched++;
             }
         }
 
@@ -961,6 +967,63 @@ public class MidiExporter
             events.removeIf(removed::contains);
             logger.info("Merged {} tied note events", removed.size());
         }
+
+        if (tiedUnmatched > 0) {
+            logger.debug("{} tied note-ons kept (no contiguous note-off)", tiedUnmatched);
+        }
+    }
+
+    //--------------//
+    // findSwallowedOff //
+    //--------------//
+    /**
+     * Find the note-off swallowed by a tied-to note-on: same pitch, tick
+     * equal or within rounding tolerance.
+     */
+    private static NoteEvent findSwallowedOff (NoteEvent on,
+                                               java.util.Map<Long, List<NoteEvent>> offsByKey,
+                                               java.util.Set<NoteEvent> removed)
+    {
+        // Exact tick first
+        final List<NoteEvent> exact = offsByKey.get(key(on.pitch, on.tick));
+
+        if (exact != null) {
+            for (NoteEvent off : exact) {
+                if (!removed.contains(off)) {
+                    return off;
+                }
+            }
+        }
+
+        // Rounding tolerance (tick rounding across barlines): same pitch,
+        // off within a couple ticks. Safe: caller already gated on tie.
+        for (long tick = on.tick - TIE_TICK_TOLERANCE; tick <= on.tick
+                + TIE_TICK_TOLERANCE; tick++) {
+            if (tick == on.tick) {
+                continue;
+            }
+
+            final List<NoteEvent> nearby = offsByKey.get(key(on.pitch, tick));
+
+            if (nearby != null) {
+                for (NoteEvent off : nearby) {
+                    if (!removed.contains(off)) {
+                        return off;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    //------//
+    // key //
+    //------//
+    private static long key (int pitch,
+                             long tick)
+    {
+        return (((long) pitch) << 32) | (tick & 0xFFFFFFFFL);
     }
 
     //--------------//
