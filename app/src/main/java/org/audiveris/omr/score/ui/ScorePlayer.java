@@ -353,6 +353,8 @@ public class ScorePlayer
             }
         }
 
+        silenceAll();
+
         if (synthesizer != null) {
             try {
                 synthesizer.close();
@@ -711,6 +713,44 @@ public class ScorePlayer
     {
         if (loggedMessages.add(message)) {
             logger.warn("Playhead: {}", message);
+        }
+    }
+
+    //-------------//
+    // silenceAll //
+    //-------------//
+    /**
+     * Silence any ringing note (sequencer stop alone leaves sustained notes
+     * sounding, which then layer over the next playback).
+     */
+    private void silenceAll ()
+    {
+        if (synthesizer == null) {
+            return;
+        }
+
+        try {
+            final javax.sound.midi.Receiver receiver = synthesizer.getReceiver();
+
+            for (int channel = 0; channel < 16; channel++) {
+                // All notes off + reset controllers
+                receiver.send(
+                        new javax.sound.midi.ShortMessage(
+                                javax.sound.midi.ShortMessage.CONTROL_CHANGE,
+                                channel,
+                                123,
+                                0),
+                        -1);
+                receiver.send(
+                        new javax.sound.midi.ShortMessage(
+                                javax.sound.midi.ShortMessage.CONTROL_CHANGE,
+                                channel,
+                                121,
+                                0),
+                        -1);
+            }
+        } catch (Exception ex) {
+            logger.debug("Could not silence synthesizer", ex);
         }
     }
 
