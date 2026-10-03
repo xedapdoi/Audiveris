@@ -146,10 +146,20 @@ public class ExportDialog
 
         final JButton browseButton = new JButton("Browse...");
         browseButton.addActionListener(e -> {
+            Path startPath;
+
+            try {
+                startPath = Paths.get(baseField.getText());
+            } catch (Exception ex) {
+                startPath = Paths.get(System.getProperty("user.home"));
+            }
+
+            // Parent to this dialog (not the main frame), else the chooser
+            // opens behind this modal dialog and looks dead
             final Path target = UIUtil.pathChooser(
                     true,
-                    owner,
-                    Paths.get(baseField.getText()),
+                    ExportDialog.this,
+                    startPath,
                     new OmrFileFilter("Export base", "mxl"));
 
             if (target != null) {
