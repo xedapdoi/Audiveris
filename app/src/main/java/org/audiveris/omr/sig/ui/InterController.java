@@ -141,6 +141,7 @@ import java.awt.event.ActionEvent;
 import java.awt.geom.Area;
 import java.awt.geom.Line2D;
 import java.awt.geom.Point2D;
+import java.awt.geom.CubicCurve2D;
 import java.awt.image.BufferedImage;
 import static java.awt.image.BufferedImage.TYPE_BYTE_GRAY;
 import java.util.ArrayList;
@@ -1828,6 +1829,145 @@ public class InterController
                 if (group != null) {
                     sheet.getInterIndex().publish(group);
                 }
+            }
+        }.execute();
+    }
+
+    //------------//
+    // slurChords //
+    //------------//
+    /**
+     * Create a manual slur (or tie) between two head chords.
+     * <p>
+     * The Bézier curve is drawn between the facing note heads and can still
+     * be reshaped afterwards in edit mode. Flagged manual and fully undoable.
+     *
+     * @param chords the two head chords, left to right
+     * @param tie    true for a tie (same pitch heads linked), false for slur
+     */
+    @UIThread
+    public void slurChords (final List<HeadChordInter> chords,
+                            final boolean tie)
+    {
+        new CtrlTask(DO, tie ? "tieChords" : "slurChords")
+        {
+            private SlurInter slur;
+
+            @Override
+            protected void build ()
+            {
+                if (chords.size() != 2) {
+                    logger.warn("Need exactly 2 chords for a slur/tie");
+
+                    return;
+                }
+
+                final SIGraph sig = chords.get(0).getSig();
+                final List<HeadChordInter> sorted = new ArrayList<>(chords);
+                Collections.sort(sorted, Inters.byAbscissa);
+
+                final HeadChordInter leftChord = sorted.get(0);
+                final HeadChordInter rightChord = sorted.get(1);
+                final HeadInter leftHead = pickHead(leftChord, tie ? rightChord : null);
+                final HeadInter rightHead = pickHead(rightChord, tie ? leftChord : null);
+
+                if (leftHead == null || rightHead == null) {
+                    logger.warn("Chords have no heads for a slur/tie");
+
+                    return;
+                }
+
+                final Rectangle leftBox = leftHead.getBounds();
+                final Rectangle rightBox = rightHead.getBounds();
+                final double interline = sheet.getScale().getInterline();
+
+                // Stem side decides slur side (heads side, away from beams)
+                final StemInter leftStem = leftChord.getStem();
+                final boolean stemUp = (leftStem == null)
+                        || (leftChord.getTailLocation().y < leftChord.getHeadLocation().y);
+                final boolean above = !stemUp;
+                final double dir = above ? -1 : 1;
+
+                final double x1 = leftBox.getCenterX();
+                final double y1 = above ? leftBox.getMinY() - 2 : leftBox.getMaxY() + 2;
+                final double x2 = rightBox.getCenterX();
+                final double y2 = above ? rightBox.getMinY() - 2 : rightBox.getMaxY() + 2;
+                final double span = Math.max(interline, x2 - x1);
+                final double bow = Math.min(
+                        interline * 2,
+                        Math.max(interline * 0.5, span * 0.15)) * dir;
+
+                final CubicCurve2D curve = new CubicCurve2D.Double(
+                        x1,
+                        y1,
+                        x1 + span / 3,
+                        y1 + bow,
+                        x2 - span / 3,
+                        y2 + bow,
+                        x2,
+                        y2);
+
+                slur = new SlurInter(above, 1.0);
+                slur.setCurve(curve);
+                slur.setTie(tie);
+                slur.setManual(true);
+                slur.setStaff(leftChord.getStaff());
+
+                final List<Link> slurLinks = new ArrayList<>();
+                slurLinks.add(new Link(leftHead, new SlurHeadRelation(LEFT), true));
+                slurLinks.add(new Link(rightHead, new SlurHeadRelation(RIGHT), true));
+                seq.add(new AdditionTask(sig, slur, slur.getBounds(), slurLinks));
+
+                logger.debug("{} between {} and {}", tie ? "Tie" : "Slur", leftChord, rightChord);
+            }
+
+            @Override
+            protected void publish ()
+            {
+                if (slur != null) {
+                    sheet.getInterIndex().publish(slur);
+                }
+            }
+
+            /**
+             * Pick the head to link: same pitch as the other chord for ties,
+             * else the first head.
+             */
+            private HeadInter pickHead (HeadChordInter chord,
+                                        HeadChordInter other)
+            {
+                final List<? extends Inter> notes = chord.getNotes();
+
+                if (notes.isEmpty()) {
+                    return null;
+                }
+
+                if (other != null) {
+                    for (Inter note : notes) {
+                        if (!(note instanceof HeadInter head)) {
+                            continue;
+                        }
+
+                        for (Inter otherNote : other.getNotes()) {
+                            if (!(otherNote instanceof HeadInter otherHead)) {
+                                continue;
+                            }
+
+                            if (head.getStep() == otherHead.getStep()
+                                    && head.getOctave() == otherHead.getOctave()) {
+                                return head;
+                            }
+                        }
+                    }
+                }
+
+                for (Inter note : notes) {
+                    if (note instanceof HeadInter head) {
+                        return head;
+                    }
+                }
+
+                return null;
             }
         }.execute();
     }

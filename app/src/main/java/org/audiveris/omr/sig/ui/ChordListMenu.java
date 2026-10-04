@@ -300,8 +300,26 @@ public class ChordListMenu
     }
 
     //----------------//
-    // buildTimeItems //
+    // buildSlurItems //
     //----------------//
+    /**
+     * Try to build slur/tie items for exactly two head chords.
+     *
+     * @param chords   the two selected chords
+     * @param listener the selection listener to use
+     */
+    private void buildSlurItems (final List<AbstractChordInter> chords,
+                                 final SelectionListener listener)
+    {
+        final List<HeadChordInter> headChords = new ArrayList<>();
+
+        if (!checkHeadChords(chords, headChords) || headChords.size() != 2) {
+            return;
+        }
+
+        addItem(new JMenuItem(new SlurAction(headChords, false)), listener);
+        addItem(new JMenuItem(new SlurAction(headChords, true)), listener);
+    }
     /**
      * Try to build time item(s) with the 2+ provided chords.
      * <p>
@@ -832,6 +850,7 @@ public class ChordListMenu
                         case 2 -> {
                             buildMergeItem(sysChords, listener);
                             buildBeamItem(sysChords, listener);
+                            buildSlurItems(sysChords, listener);
                             buildVoiceItems(sysChords, listener);
                             buildTimeItems(sysChords, listener);
                         }
@@ -970,6 +989,37 @@ public class ChordListMenu
         {
             logger.debug("Hook on {} forward={}", chord, forward);
             sheet.getInterController().beamHook(chord, forward);
+        }
+    }
+
+    //------------//
+    // SlurAction //
+    //------------//
+    private class SlurAction
+            extends AbstractAction
+    {
+        private final List<HeadChordInter> chords;
+
+        private final boolean tie;
+
+        SlurAction (List<HeadChordInter> chords,
+                    boolean tie)
+        {
+            super(tie ? "Add tie" : "Add slur");
+            putValue(
+                    Action.SHORT_DESCRIPTION,
+                    tie ? "Create a manual tie between the two chords"
+                            : "Create a manual slur between the two chords");
+
+            this.chords = chords;
+            this.tie = tie;
+        }
+
+        @Override
+        public void actionPerformed (ActionEvent e)
+        {
+            logger.debug("{} between {}", tie ? "Tie" : "Slur", chords);
+            sheet.getInterController().slurChords(chords, tie);
         }
     }
 

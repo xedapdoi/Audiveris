@@ -974,6 +974,20 @@ public class SlurInter
         checkAbnormal();
     }
 
+    //-----------//
+    // setCurve //
+    //-----------//
+    /**
+     * Assign the Bézier curve (for manual slur/tie creation).
+     *
+     * @param curve median curve, from left to right
+     */
+    public void setCurve (java.awt.geom.CubicCurve2D curve)
+    {
+        this.curve = curve;
+        setBounds(null);
+    }
+
     //----------//
     // setGlyph //
     //----------//
