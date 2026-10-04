@@ -182,8 +182,28 @@ public class ChordListMenu
     }
 
     //----------------//
-    // buildBeamItem //
+    // buildHookItems //
     //----------------//
+    /**
+     * Try to build beam-hook items for a single stemmed head chord.
+     *
+     * @param chord    the provided chord
+     * @param listener the selection listener to use
+     */
+    private void buildHookItems (final AbstractChordInter chord,
+                                 final SelectionListener listener)
+    {
+        if (!(chord instanceof HeadChordInter headChord)) {
+            return;
+        }
+
+        if (headChord.getStem() == null) {
+            return;
+        }
+
+        addItem(new JMenuItem(new HookAction(headChord, true)), listener);
+        addItem(new JMenuItem(new HookAction(headChord, false)), listener);
+    }
     /**
      * Try to build beam creation item(s).
      * <p>
@@ -805,6 +825,7 @@ public class ChordListMenu
                         }
                         case 1 -> {
                             buildSplitItem(sysChords.get(0), listener);
+                            buildHookItems(sysChords.get(0), listener);
                             buildVoiceMenu(sysChords.get(0), listener);
                         }
 
@@ -910,7 +931,6 @@ public class ChordListMenu
             putValue(
                     Action.SHORT_DESCRIPTION,
                     "Create manual beam(s) over the selected chords");
-
             this.chords = chords;
             this.beamCount = beamCount;
         }
@@ -920,6 +940,36 @@ public class ChordListMenu
         {
             logger.debug("Beaming {} with {} beam(s)", chords, beamCount);
             sheet.getInterController().beamChords(chords, beamCount);
+        }
+    }
+
+    //------------//
+    // HookAction //
+    //------------//
+    private class HookAction
+            extends AbstractAction
+    {
+        private final HeadChordInter chord;
+
+        private final boolean forward;
+
+        HookAction (HeadChordInter chord,
+                    boolean forward)
+        {
+            super(forward ? "Add forward hook" : "Add backward hook");
+            putValue(
+                    Action.SHORT_DESCRIPTION,
+                    "Create a manual beam hook on the selected chord");
+
+            this.chord = chord;
+            this.forward = forward;
+        }
+
+        @Override
+        public void actionPerformed (ActionEvent e)
+        {
+            logger.debug("Hook on {} forward={}", chord, forward);
+            sheet.getInterController().beamHook(chord, forward);
         }
     }
 

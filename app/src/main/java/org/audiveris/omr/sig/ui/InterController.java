@@ -62,6 +62,7 @@ import org.audiveris.omr.sig.inter.AlterInter;
 import org.audiveris.omr.sig.inter.BarConnectorInter;
 import org.audiveris.omr.sig.inter.BarlineInter;
 import org.audiveris.omr.sig.inter.BeamGroupInter;
+import org.audiveris.omr.sig.inter.BeamHookInter;
 import org.audiveris.omr.sig.inter.BeamInter;
 import org.audiveris.omr.sig.inter.BraceInter;
 import org.audiveris.omr.sig.inter.ChordNameInter;
@@ -1684,6 +1685,149 @@ public class InterController
                 }
 
                 sheet.getInterIndex().publish(newGroup);
+            }
+        }.execute();
+    }
+
+    //-----------//
+    // beamHook //
+    //-----------//
+    /**
+     * Create a manual beam hook on the provided head chord, typically to turn
+     * one note of a beamed group into a shorter value (e.g. dotted-eighth plus
+     * sixteenth sharing one full beam plus a hook).
+     * <p>
+     * The hook is placed parallel to the chord existing beam if any,
+     * else horizontally at the stem tail, and can still be dragged
+     * afterwards in edit mode. Flagged manual and fully undoable.
+     *
+     * @param chord   the head chord (with stem) receiving the hook
+     * @param forward true for a forward hook (extends right), false backward
+     */
+    @UIThread
+    public void beamHook (final HeadChordInter chord,
+                          final boolean forward)
+    {
+        new CtrlTask(DO, "beamHook")
+        {
+            private BeamHookInter hook;
+
+            private BeamGroupInter group;
+
+            private boolean groupIsNew;
+
+            @Override
+            protected void build ()
+            {
+                final SIGraph sig = chord.getSig();
+                final StemInter stem = chord.getStem();
+
+                if (stem == null) {
+                    logger.warn("Chord {} has no stem for a hook", chord.getId());
+
+                    return;
+                }
+
+                final double interline = sheet.getScale().getInterline();
+                final Point tail = chord.getTailLocation();
+                final Point head = chord.getHeadLocation();
+                final boolean stemUp = tail.y < head.y;
+
+                // Reference beam: same slope/height if the chord is beamed
+                double slope = 0;
+                double height = 35;
+                double baseY = tail.y + (stemUp ? interline * 0.8 : -interline * 0.8);
+
+                for (AbstractBeamInter beam : chord.getBeams()) {
+                    if (!beam.isHook()) {
+                        final Line2D median = beam.getMedian();
+
+                        if (median.getX2() != median.getX1()) {
+                            slope = (median.getY2() - median.getY1()) / (median.getX2() - median
+                                    .getX1());
+                        }
+
+                        height = beam.getHeight();
+                        baseY = median.getY1() + slope * (tail.x - median.getX1()) + (stemUp
+                                ? (height + interline * 0.4) : -(height + interline * 0.4));
+
+                        break;
+                    }
+                }
+
+                final double length = interline * 1.5;
+                final double x1 = tail.x;
+                final double x2 = forward ? (x1 + length) : (x1 - length);
+                final Line2D median = new Line2D.Double(
+                        x1,
+                        baseY,
+                        x2,
+                        baseY + slope * (x2 - x1));
+
+                hook = new BeamHookInter(1.0);
+                hook.setMedianAndHeight(median, height);
+                hook.setManual(true);
+                hook.setStaff(chord.getStaff());
+
+                // Reuse the chord beam group if any, else find or create one
+                group = null;
+
+                for (AbstractBeamInter beam : chord.getBeams()) {
+                    if (beam.getGroup() != null) {
+                        group = beam.getGroup();
+
+                        break;
+                    }
+                }
+
+                final SystemInfo system = sig.getSystem();
+                groupIsNew = false;
+
+                if (group == null) {
+                    group = BeamGroupInter.findBeamGroup(hook, system, null);
+
+                    if (group == null) {
+                        group = new BeamGroupInter();
+                        group.setManual(true);
+                        group.setStaff(chord.getStaff());
+                        groupIsNew = true;
+                    }
+                }
+
+                final BeamStemRelation rel = new BeamStemRelation();
+                rel.setManual(true);
+                seq.add(
+                        new AdditionTask(
+                                sig,
+                                hook,
+                                hook.getBounds(),
+                                java.util.Collections.singletonList(new Link(stem, rel, true))));
+
+                if (groupIsNew) {
+                    seq.add(
+                            new AdditionTask(
+                                    sig,
+                                    group,
+                                    hook.getBounds(),
+                                    java.util.Collections.singletonList(
+                                            new Link(hook, new Containment(), true))));
+                } else {
+                    seq.add(new LinkTask(sig, group, hook, new Containment()));
+                }
+
+                logger.debug("Hook on {} forward={}", chord, forward);
+            }
+
+            @Override
+            protected void publish ()
+            {
+                if (hook != null) {
+                    sheet.getInterIndex().publish(hook);
+                }
+
+                if (group != null) {
+                    sheet.getInterIndex().publish(group);
+                }
             }
         }.execute();
     }
