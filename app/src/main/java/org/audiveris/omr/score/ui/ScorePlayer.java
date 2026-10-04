@@ -402,20 +402,16 @@ public class ScorePlayer
                 final String text = new String(meta.getData());
 
                 if (text.startsWith("chord=")) {
-                    try {
-                        final int id = Integer.parseInt(text.substring(6));
+                    final String key = text.substring(6);
 
-                        if (constants.playbackDebug.isSet()) {
-                            logger.info(
-                                    "Playback marker tick={} chord={}",
-                                    sequencer.getTickPosition(),
-                                    id);
-                        }
-
-                        movePlayhead(movement, id);
-                    } catch (NumberFormatException ignored) {
-                        // Ignore
+                    if (constants.playbackDebug.isSet()) {
+                        logger.info(
+                                "Playback marker tick={} chord={}",
+                                sequencer.getTickPosition(),
+                                key);
                     }
+
+                    movePlayhead(movement, key);
                 }
             } else if (meta.getType() == 0x2F) {
                 onTrackEnd();
@@ -477,7 +473,7 @@ public class ScorePlayer
                         final AbstractChordInter chord = toChord(inter);
 
                         if (chord != null) {
-                            final Long tick = tickOf(chord.getId());
+                            final Long tick = tickOf(MidiExporter.chordKey(chord));
 
                             if (tick != null) {
                                 logger.info("Playing from selected chord {}", chord.getId());
@@ -498,7 +494,7 @@ public class ScorePlayer
                     int bestX = Integer.MIN_VALUE;
 
                     for (Movement movement : queue) {
-                        for (Map.Entry<Integer, AbstractChordInter> entry : movement.chords
+                        for (Map.Entry<String, AbstractChordInter> entry : movement.chords
                                 .entrySet()) {
                             final AbstractChordInter chord = entry.getValue();
 
@@ -560,12 +556,12 @@ public class ScorePlayer
     // tickOf //
     //---------//
     /**
-     * Report the note-on tick of a chord id across queued movements.
+     * Report the note-on tick of a chord key across queued movements.
      */
-    private Long tickOf (int chordId)
+    private Long tickOf (String chordKey)
     {
         for (Movement movement : queue) {
-            final Long tick = movement.chordTicks.get(chordId);
+            final Long tick = movement.chordTicks.get(chordKey);
 
             if (tick != null) {
                 return tick;
@@ -579,25 +575,26 @@ public class ScorePlayer
     // movePlayhead //
     //--------------//
     /**
-     * Move the playback playhead line to the chord with the provided id.
+     * Move the playback playhead line to the chord with the provided key
+     * ("stub:id", unambiguous across sheets).
      * Unlike entity selection, the playhead does not disturb the user selection.
      * The line spans from the top line of the upper staff to the bottom line
      * of the lower staff.
      *
      * @param movement the movement being played
-     * @param id       chord id
+     * @param key      chord key
      */
     private void movePlayhead (Movement movement,
-                               int id)
+                               String key)
     {
         if (!showPlayhead) {
             return;
         }
 
-        final AbstractChordInter chord = movement.chords.get(id);
+        final AbstractChordInter chord = movement.chords.get(key);
 
         if (chord == null) {
-            logOnce("No chord for playhead id " + id);
+            logOnce("No chord for playhead key " + key);
 
             return;
         }
@@ -614,7 +611,7 @@ public class ScorePlayer
             final Rectangle rect = playheadRect(chord);
 
             if (rect == null) {
-                logOnce("Could not place playhead for chord " + id);
+                logOnce("Could not place playhead for chord " + key);
 
                 return;
             }
@@ -637,7 +634,7 @@ public class ScorePlayer
                     logger.info("Playhead showing at {}", rect);
                 }
             } catch (Exception ex) {
-                logOnce("Could not move playhead to chord " + id + ": " + ex);
+                logOnce("Could not move playhead to chord " + key + ": " + ex);
             }
         });
     }
@@ -818,7 +815,7 @@ public class ScorePlayer
                                 if (!chord.isRest()
                                         && chord.getTimeOffset() != null
                                         && chord.getDuration() != null) {
-                                    movement.chords.put(chord.getId(), chord);
+                                    movement.chords.put(MidiExporter.chordKey(chord), chord);
                                 }
                             }
                         }
@@ -847,9 +844,9 @@ public class ScorePlayer
     /** One queued movement: MIDI file, chord index and chord ticks. */
     private static class Movement
     {
-        final Map<Integer, AbstractChordInter> chords = new TreeMap<>();
+        final Map<String, AbstractChordInter> chords = new TreeMap<>();
 
-        final Map<Integer, Long> chordTicks = new TreeMap<>();
+        final Map<String, Long> chordTicks = new TreeMap<>();
 
         int tempoQpm;
     }

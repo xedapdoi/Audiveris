@@ -119,11 +119,22 @@ public class MidiExporter
     /** Explicit tempo override (toolbar), wins over metronome and constant. */
     private Integer tempoOverride;
 
-    /** Chord id -> note-on tick, for playback seek/sync. */
-    private final Map<Integer, Long> chordTicks = new TreeMap<>();
+    /** Chord key -> note-on tick, for playback seek/sync. */
+    private final Map<String, Long> chordTicks = new TreeMap<>();
 
-    /** Head id -> head, for tie analysis. */
-    private final Map<Integer, HeadInter> headIndex = new TreeMap<>();
+    /** Head key -> head, for tie analysis. */
+    private final Map<String, HeadInter> headIndex = new TreeMap<>();
+
+    // Skip diagnostics (INFO summary at end of export)
+    private int skippedRests;
+
+    private int skippedNullTime;
+
+    private int skippedNullDuration;
+
+    private int skippedNonPositive;
+
+    private int exportedChords;
 
     //~ Constructors -------------------------------------------------------------------------------
 
@@ -186,10 +197,11 @@ public class MidiExporter
     //----------------//
     /**
      * Report the note-on tick of each exported chord, for playback seek/sync.
+     * Keys are "stubNumber:chordId" (inter ids alone collide across sheets).
      *
-     * @return map of chord id to tick (valid after {@link #export(Path)})
+     * @return map of chord key to tick (valid after {@link #export(Path)})
      */
-    public Map<Integer, Long> getChordTicks ()
+    public Map<String, Long> getChordTicks ()
     {
         return chordTicks;
     }
@@ -222,7 +234,14 @@ public class MidiExporter
         final Sequence sequence = buildSequence(java.util.Collections.singletonList(score));
         midiPath.toFile().getParentFile().mkdirs();
         MidiSystem.write(sequence, 1, midiPath.toFile());
-        logger.info("Exported MIDI {}", midiPath);
+        logger.info(
+                "Exported MIDI {} (chords={}, skipRest={}, skipNullTime={}, skipNullDur={}, skipNonPos={})",
+                midiPath,
+                exportedChords,
+                skippedRests,
+                skippedNullTime,
+                skippedNullDuration,
+                skippedNonPositive);
     }
 
     //---------------//
@@ -269,10 +288,10 @@ public class MidiExporter
                 one.setTempoOverride(tempoOverride != null ? tempoOverride : globalTempoOverride);
                 sequences.add(one.buildSingle());
 
-                for (Map.Entry<Integer, Long> entry : one.getChordTicks().entrySet()) {
-                    chordTicks.putIfAbsent(entry.getKey(), entry.getValue() + sequencesOffset(
-                            sequences));
-                }
+            for (Map.Entry<String, Long> entry : one.getChordTicks().entrySet()) {
+                chordTicks.putIfAbsent(entry.getKey(), entry.getValue() + sequencesOffset(
+                        sequences));
+            }
             }
 
             return mergeSequences(sequences);
@@ -477,6 +496,8 @@ public class MidiExporter
 
         // Walk the play order ONCE; every staff track advances in lockstep,
         // sounding or silent, so staves never drift apart
+        int walkIndex = 0;
+
         for (MeasureStack stack : playOrder) {
             final SystemInfo system = stack.getSystem();
             final Map<Part, Measure> partMap = scoreMap.get(stack);
@@ -484,6 +505,14 @@ public class MidiExporter
             if (system == null || partMap == null) {
                 continue;
             }
+
+            logger.info(
+                    "Walk {} stackId={} sys={} sheet={} cursor={}",
+                    walkIndex++,
+                    stack.getIdValue(),
+                    system.getId(),
+                    system.getSheet().getStub().getNumber(),
+                    cursors.getOrDefault("1:0", -1L));
 
             final long advance = expectedTicks(stack);
 
@@ -823,10 +852,25 @@ public class MidiExporter
 
         for (VoiceEntry entry : entries) {
             final AbstractChordInter chord = entry.chord;
+
+            if (chord.isRest()) {
+                skippedRests++;
+
+                continue;
+            }
+
             final Rational onset = chord.getTimeOffset();
             final Rational duration = chord.getDuration();
 
-            if (onset == null || duration == null) {
+            if (onset == null) {
+                skippedNullTime++;
+
+                continue;
+            }
+
+            if (duration == null) {
+                skippedNullDuration++;
+
                 continue;
             }
 
@@ -834,8 +878,12 @@ public class MidiExporter
             final long durTicks = toTicks(duration);
 
             if (durTicks <= 0) {
+                skippedNonPositive++;
+
                 continue; // Grace note or invalid, skip sounding
             }
+
+            exportedChords++;
 
             // Arpeggiated chord? Strum bottom-up instead of block.
             final boolean arpeggiated = isArpeggiated(chord);
@@ -847,8 +895,8 @@ public class MidiExporter
                 }
 
                 if (inter instanceof HeadInter head) {
-                    pitched.add(new PitchedHead(toMidi(head, entry.fifths), head.getId()));
-                    headIndex.put(head.getId(), head);
+                    pitched.add(new PitchedHead(toMidi(head, entry.fifths), headKey(head)));
+                    headIndex.put(headKey(head), head);
                 }
             }
 
@@ -876,21 +924,21 @@ public class MidiExporter
                 for (int i = 0; i < pitched.size(); i++) {
                     final PitchedHead ph = pitched.get(i);
                     final long noteOn = arpeggiated ? (onTick + i * strumTicks) : onTick;
-                    events.add(new NoteEvent(ph.pitch, noteOn, true, ph.headId));
+                    events.add(new NoteEvent(ph.pitch, noteOn, true, ph.headKey));
                     events.add(new NoteEvent(ph.pitch, onTick + durTicks, false));
                 }
             }
 
-            // Chord marker for playback highlight sync ("chord=<id>")
-            markers.add(new Marker(chord.getId(), onTick));
-            chordTicks.putIfAbsent(chord.getId(), onTick);
+            // Chord marker for playback sync ("chord=<stub>:<id>")
+            markers.add(new Marker(chordKey(chord), onTick));
+            chordTicks.putIfAbsent(chordKey(chord), onTick);
         }
 
         // Stash events for end-of-export tie merging and emission
         trackEvents.computeIfAbsent(trackKey, k -> new ArrayList<>()).addAll(events);
 
         for (Marker marker : markers) {
-            addMarker(track, marker.tick, "chord=" + marker.chordId);
+            addMarker(track, marker.tick, "chord=" + marker.chordKey);
         }
     }
 
@@ -953,7 +1001,7 @@ public class MidiExporter
         int tiedUnmatched = 0;
 
         for (NoteEvent event : events) {
-            if (!event.on || event.headId == 0 || !isTieTarget(event.headId)) {
+            if (!event.on || event.headKey.isEmpty() || !isTieTarget(event.headKey)) {
                 continue;
             }
 
@@ -1037,9 +1085,9 @@ public class MidiExporter
      * Report whether the head is tied from a previous head (right side of a
      * tie slur).
      */
-    private boolean isTieTarget (int headId)
+    private boolean isTieTarget (String headKey)
     {
-        final HeadInter head = headIndex.get(headId);
+        final HeadInter head = headIndex.get(headKey);
 
         if (head == null) {
             return false;
@@ -1055,7 +1103,7 @@ public class MidiExporter
                 }
             }
         } catch (Exception ex) {
-            logger.debug("Tie check failed for head {}", headId, ex);
+            logger.debug("Tie check failed for head {}", headKey, ex);
         }
 
         return false;
@@ -1073,6 +1121,39 @@ public class MidiExporter
             return !chord.getSig().getRelations(chord, ChordArpeggiatoRelation.class).isEmpty();
         } catch (Exception ex) {
             return false;
+        }
+    }
+
+    //-----------//
+    // chordKey //
+    //-----------//
+    /**
+     * Report the export key of a chord: sheet stub number plus chord id.
+     * Bare inter ids collide across sheets of a merged book.
+     */
+    public static String chordKey (AbstractChordInter chord)
+    {
+        try {
+            return chord.getSig().getSystem().getSheet().getStub().getNumber() + ":" + chord
+                    .getId();
+        } catch (Exception ex) {
+            return "0:" + chord.getId();
+        }
+    }
+
+    //----------//
+    // headKey //
+    //----------//
+    /**
+     * Report the export key of a note head: sheet stub number plus head id.
+     */
+    static String headKey (HeadInter head)
+    {
+        try {
+            return head.getSig().getSystem().getSheet().getStub().getNumber() + ":" + head
+                    .getId();
+        } catch (Exception ex) {
+            return "0:" + head.getId();
         }
     }
 
@@ -1265,17 +1346,17 @@ public class MidiExporter
     //--------//
     // Marker //
     //--------//
-    /** Chord marker for playback highlight sync. */
+    /** Chord marker for playback sync ("stub:id"). */
     private static class Marker
     {
-        final int chordId;
+        final String chordKey;
 
         final long tick;
 
-        Marker (int chordId,
+        Marker (String chordKey,
                 long tick)
         {
-            this.chordId = chordId;
+            this.chordKey = chordKey;
             this.tick = tick;
         }
     }
@@ -1292,43 +1373,43 @@ public class MidiExporter
 
         final boolean on;
 
-        /** Head id for on-events (0 when unknown), used for tie merging. */
-        final int headId;
+        /** Head key for on-events ("" when unknown), used for tie merging. */
+        final String headKey;
 
         NoteEvent (int pitch,
                    long tick,
                    boolean on)
         {
-            this(pitch, tick, on, 0);
+            this(pitch, tick, on, "");
         }
 
         NoteEvent (int pitch,
                    long tick,
                    boolean on,
-                   int headId)
+                   String headKey)
         {
             this.pitch = pitch;
             this.tick = tick;
             this.on = on;
-            this.headId = headId;
+            this.headKey = headKey;
         }
     }
 
     //--------------//
     // PitchedHead //
     //--------------//
-    /** A MIDI pitch with its head id, sorted bottom-up. */
+    /** A MIDI pitch with its head key, sorted bottom-up. */
     private static class PitchedHead
     {
         final int pitch;
 
-        final int headId;
+        final String headKey;
 
         PitchedHead (int pitch,
-                     int headId)
+                     String headKey)
         {
             this.pitch = pitch;
-            this.headId = headId;
+            this.headKey = headKey;
         }
     }
 
