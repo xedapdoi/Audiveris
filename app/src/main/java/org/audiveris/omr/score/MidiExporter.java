@@ -494,10 +494,70 @@ public class MidiExporter
             }
         }
 
-        // Walk the play order ONCE; every staff track advances in lockstep,
-        // sounding or silent, so staves never drift apart
-        int walkIndex = 0;
+        // Pre-scan: every logical part gets a track from tick 0, even parts
+        // entering late (or taceting whole pages). Without this, late parts
+        // would pile their notes at the beginning instead of their entrance.
+        final Map<Integer, PartTemplate> templates = new LinkedHashMap<>();
 
+        for (MeasureStack stack : playOrder) {
+            final SystemInfo system = stack.getSystem();
+
+            if (system == null) {
+                continue;
+            }
+
+            for (Part part : system.getParts()) {
+                final LogicalPart logical = part.getLogicalPart();
+                final int logicalId = (logical != null) ? logical.getId() : part.getId();
+                final PartTemplate existing = templates.get(logicalId);
+
+                if (existing == null) {
+                    final String partName = (logical != null && logical.getName() != null)
+                            ? logical.getName() : ("Part " + logicalId);
+                    final int program = (logical != null && logical.getMidiProgram() != null)
+                            ? logical.getMidiProgram() : 0;
+                    templates.put(
+                            logicalId,
+                            new PartTemplate(
+                                    partName,
+                                    program,
+                                    Math.max(1, part.getStaves().size()),
+                                    system));
+                } else if (part.getStaves().size() > existing.staffCount) {
+                    existing.staffCount = part.getStaves().size();
+                }
+            }
+        }
+
+        for (Map.Entry<Integer, PartTemplate> template : templates.entrySet()) {
+            final int logicalId = template.getKey();
+            final PartTemplate info = template.getValue();
+
+            for (int staffIndex = 0; staffIndex < info.staffCount; staffIndex++) {
+                final String trackKey = logicalId + ":" + staffIndex;
+                final Track track = sequence.createTrack();
+                tracks.put(trackKey, track);
+
+                int channel = channelAlloc;
+
+                if (channel == 9) {
+                    channel = 10; // Skip percussion channel
+                }
+
+                channelAlloc = channel + 1;
+                channels.put(trackKey, channel % 16);
+                cursors.put(trackKey, 0L);
+
+                addTrackName(
+                        track,
+                        0,
+                        info.name + "-" + clefOf(info.system, null, staffIndex, clefs, trackKey));
+                addProgramChange(track, 0, channels.get(trackKey), info.program);
+            }
+        }
+
+        // Walk the play order ONCE; EVERY known track advances on EVERY stack,
+        // sounding or silent, so parts never drift apart nor pile up
         for (MeasureStack stack : playOrder) {
             final SystemInfo system = stack.getSystem();
             final Map<Part, Measure> partMap = scoreMap.get(stack);
@@ -506,26 +566,14 @@ public class MidiExporter
                 continue;
             }
 
-            logger.info(
-                    "Walk {} stackId={} sys={} sheet={} cursor={}",
-                    walkIndex++,
-                    stack.getIdValue(),
-                    system.getId(),
-                    system.getSheet().getStub().getNumber(),
-                    cursors.getOrDefault("1:0", -1L));
-
             final long advance = expectedTicks(stack);
 
-            for (Part part : system.getParts()) {
-                final LogicalPart logical = part.getLogicalPart();
-                final int logicalId = (logical != null) ? logical.getId() : part.getId();
-                final String partName = (logical != null && logical.getName() != null)
-                        ? logical.getName() : ("Part " + logicalId);
-                final int program = (logical != null && logical.getMidiProgram() != null)
-                        ? logical.getMidiProgram() : 0;
-                final Measure measure = partMap.get(part);
+            for (Map.Entry<Integer, PartTemplate> template : templates.entrySet()) {
+                final int logicalId = template.getKey();
+                final Part part = partInSystem(system, logicalId);
+                final Measure measure = (part != null) ? partMap.get(part) : null;
 
-                // Running key signature per staff track (carries over measures)
+                // Running key signature per part (carries over measures)
                 if (measure != null && measure.hasKeys()) {
                     try {
                         final KeyInter key = measure.getKey(0);
@@ -542,39 +590,11 @@ public class MidiExporter
                 final Map<Integer, List<VoiceEntry>> byStaff = (measure != null)
                         ? dispatchByStaff(measure, keySigs.get(logicalId + ":*")) : Collections
                                 .emptyMap();
-                final int staffCount = Math.max(1, part.getStaves().size());
+                final int staffCount = template.getValue().staffCount;
 
                 for (int staffIndex = 0; staffIndex < staffCount; staffIndex++) {
                     final String trackKey = logicalId + ":" + staffIndex;
-                    Track track = tracks.get(trackKey);
-
-                    if (track == null) {
-                        track = sequence.createTrack();
-                        tracks.put(trackKey, track);
-
-                        int channel = channelAlloc;
-
-                        if (channel == 9) {
-                            channel = 10; // Skip percussion channel
-                        }
-
-                        channelAlloc = channel + 1;
-                        channels.put(trackKey, channel % 16);
-                        cursors.putIfAbsent(trackKey, 0L);
-
-                        final String clef = clefOf(
-                                system,
-                                measure,
-                                staffIndex,
-                                clefs,
-                                trackKey);
-                        addTrackName(
-                                track,
-                                0,
-                                partName + "-" + clef);
-                        addProgramChange(track, 0, channels.get(trackKey), program);
-                    }
-
+                    final Track track = tracks.get(trackKey);
                     final long startTick = cursors.get(trackKey);
                     final List<VoiceEntry> entries = byStaff.get(staffIndex);
 
@@ -1157,6 +1177,27 @@ public class MidiExporter
         }
     }
 
+    //--------------//
+    // partInSystem //
+    //--------------//
+    /**
+     * Find the part of a system mapping to a logical part id, if any.
+     */
+    private static Part partInSystem (SystemInfo system,
+                                      int logicalId)
+    {
+        for (Part part : system.getParts()) {
+            final LogicalPart logical = part.getLogicalPart();
+            final int id = (logical != null) ? logical.getId() : part.getId();
+
+            if (id == logicalId) {
+                return part;
+            }
+        }
+
+        return null;
+    }
+
     //---------//
     // toTicks //
     //---------//
@@ -1410,6 +1451,32 @@ public class MidiExporter
         {
             this.pitch = pitch;
             this.headKey = headKey;
+        }
+    }
+
+    //--------------//
+    // PartTemplate //
+    //--------------//
+    /** Pre-scanned logical part: name, program, staff count, first system. */
+    private static class PartTemplate
+    {
+        final String name;
+
+        final int program;
+
+        int staffCount;
+
+        final SystemInfo system;
+
+        PartTemplate (String name,
+                      int program,
+                      int staffCount,
+                      SystemInfo system)
+        {
+            this.name = name;
+            this.program = program;
+            this.staffCount = staffCount;
+            this.system = system;
         }
     }
 
