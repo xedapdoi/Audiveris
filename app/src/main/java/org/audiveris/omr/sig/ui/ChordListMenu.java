@@ -813,10 +813,28 @@ public class ChordListMenu
             removeAll();
 
             if (!chordMap.isEmpty()) {
+                final List<HeadChordInter> allHeads = new ArrayList<>();
+                SelectionListener firstListener = null;
+                boolean pairInOneSystem = false;
+
                 for (Entry<SystemInfo, List<AbstractChordInter>> entry : chordMap.entrySet()) {
                     final SystemInfo system = entry.getKey();
                     final List<AbstractChordInter> sysChords = entry.getValue();
                     final SelectionListener listener = new SelectionListener(sysChords);
+
+                    if (firstListener == null) {
+                        firstListener = listener;
+                    }
+
+                    final List<HeadChordInter> sysHeads = new ArrayList<>();
+
+                    if (checkHeadChords(sysChords, sysHeads)) {
+                        allHeads.addAll(sysHeads);
+
+                        if (sysHeads.size() >= 2) {
+                            pairInOneSystem = true;
+                        }
+                    }
                     final int systemStartCount = getItemCount();
 
                     if (systemStartCount > 0) {
@@ -869,6 +887,15 @@ public class ChordListMenu
                             remove(getItemCount() - 1);
                         }
                     }
+                }
+
+                // Cross-system pair (e.g. tie across a system break): offer slur/tie once
+                if (allHeads.size() == 2 && !pairInOneSystem && firstListener != null) {
+                    addSeparator();
+                    addItem(
+                            new JMenuItem(new SlurAction(allHeads, false)),
+                            firstListener);
+                    addItem(new JMenuItem(new SlurAction(allHeads, true)), firstListener);
                 }
             }
 
