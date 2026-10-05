@@ -244,6 +244,43 @@ public class ChordListMenu
         addItem(new JMenuItem(new BeamAction(headChords, 2)), listener);
     }
 
+    //--------------------//
+    // buildPatternItems //
+    //--------------------//
+    /**
+     * Build one menu item per beam pattern matching the selected chords count.
+     * Only stemmed head chords in a single measure qualify.
+     *
+     * @param chords   the selected chords, 2 or more
+     * @param listener the selection listener to use
+     */
+    private void buildPatternItems (final List<AbstractChordInter> chords,
+                                    final SelectionListener listener)
+    {
+        final List<HeadChordInter> headChords = new ArrayList<>();
+
+        if (!checkHeadChords(chords, headChords)) {
+            return;
+        }
+
+        if (!checkSingleMeasure(headChords)) {
+            logger.debug("Chords of different measures: {}", headChords);
+
+            return;
+        }
+
+        for (HeadChordInter ch : headChords) {
+            if (ch.getStem() == null) {
+                return;
+            }
+        }
+
+        for (InterController.BeamPattern pattern : InterController.BeamPattern.forSize(
+                headChords.size())) {
+            addItem(new JMenuItem(new PatternAction(headChords, pattern)), listener);
+        }
+    }
+
     //----------------//
     // buildSplitItem //
     //----------------//
@@ -867,7 +904,7 @@ public class ChordListMenu
 
                         case 2 -> {
                             buildMergeItem(sysChords, listener);
-                            buildBeamItem(sysChords, listener);
+                            buildPatternItems(sysChords, listener);
                             buildSlurItems(sysChords, listener);
                             buildVoiceItems(sysChords, listener);
                             buildTimeItems(sysChords, listener);
@@ -876,7 +913,7 @@ public class ChordListMenu
                         default -> {
                             // 3 and above
                             buildMergeItem(sysChords, listener);
-                            buildBeamItem(sysChords, listener);
+                            buildPatternItems(sysChords, listener);
                             buildTimeItems(sysChords, listener);
                         }
                     }
@@ -986,6 +1023,36 @@ public class ChordListMenu
         {
             logger.debug("Beaming {} with {} beam(s)", chords, beamCount);
             sheet.getInterController().beamChords(chords, beamCount);
+        }
+    }
+
+    //---------------//
+    // PatternAction //
+    //---------------//
+    private class PatternAction
+            extends AbstractAction
+    {
+        private final List<HeadChordInter> chords;
+
+        private final InterController.BeamPattern pattern;
+
+        PatternAction (List<HeadChordInter> chords,
+                       InterController.BeamPattern pattern)
+        {
+            super(pattern.toString());
+            putValue(
+                    Action.SHORT_DESCRIPTION,
+                    "Redraw the selected chords with beam pattern " + pattern);
+
+            this.chords = chords;
+            this.pattern = pattern;
+        }
+
+        @Override
+        public void actionPerformed (ActionEvent e)
+        {
+            logger.debug("Pattern {} on {}", pattern, chords);
+            sheet.getInterController().applyBeamPattern(chords, pattern);
         }
     }
 

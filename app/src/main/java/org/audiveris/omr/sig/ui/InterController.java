@@ -71,6 +71,7 @@ import org.audiveris.omr.sig.inter.HeadInter;
 import org.audiveris.omr.sig.inter.Inter;
 import org.audiveris.omr.sig.inter.InterPair;
 import org.audiveris.omr.sig.inter.Inters;
+import org.audiveris.omr.sig.inter.TupletInter;
 import org.audiveris.omr.sig.inter.KeyAlterInter;
 import org.audiveris.omr.sig.inter.KeyInter;
 import org.audiveris.omr.sig.inter.KeyInter.KeyConfig;
@@ -89,6 +90,7 @@ import org.audiveris.omr.sig.inter.WordInter;
 import org.audiveris.omr.sig.relation.AugmentationRelation;
 import org.audiveris.omr.sig.relation.BarConnectionRelation;
 import org.audiveris.omr.sig.relation.BeamStemRelation;
+import org.audiveris.omr.sig.relation.ChordTupletRelation;
 import org.audiveris.omr.sig.relation.ChordWedgeRelation;
 import org.audiveris.omr.sig.relation.Containment;
 import org.audiveris.omr.sig.relation.FlagStemRelation;
@@ -1972,6 +1974,249 @@ public class InterController
         }.execute();
     }
 
+    //-------------------//
+    // applyBeamPattern //
+    //-------------------//
+    /**
+     * Redraw the selected chords with a beam pattern (e.g. 16-16-8):
+     * full beams over runs of notes sharing a beam level, hooks elsewhere,
+     * all in one beam group, plus a triplet bracket when needed.
+     * Durations follow live from beams/tuplet. Fully undoable.
+     *
+     * @param chords  the head chords, in any order (2 or more)
+     * @param pattern the beam pattern (length must match chords count)
+     */
+    @UIThread
+    public void applyBeamPattern (final List<HeadChordInter> chords,
+                                  final BeamPattern pattern)
+    {
+        new CtrlTask(DO, "beamPattern")
+        {
+            private final List<AbstractBeamInter> newBeams = new ArrayList<>();
+
+            private BeamGroupInter newGroup = new BeamGroupInter();
+
+            private TupletInter triplet;
+
+            @Override
+            protected void build ()
+            {
+                if (chords.size() != pattern.beams.length) {
+                    logger.warn(
+                            "Pattern {} needs {} chords, got {}",
+                            pattern.label,
+                            pattern.beams.length,
+                            chords.size());
+
+                    return;
+                }
+
+                final SIGraph sig = chords.get(0).getSig();
+                final List<HeadChordInter> sorted = new ArrayList<>(chords);
+                Collections.sort(sorted, Inters.byAbscissa);
+
+                final List<StemInter> stems = new ArrayList<>();
+                final List<Point> tails = new ArrayList<>();
+
+                for (HeadChordInter ch : sorted) {
+                    final StemInter stem = ch.getStem();
+
+                    if (stem == null) {
+                        logger.warn("Chord {} has no stem, abort", ch.getId());
+
+                        return;
+                    }
+
+                    stems.add(stem);
+                    tails.add(ch.getTailLocation());
+                }
+
+                final double interline = sheet.getScale().getInterline();
+                final double height = 35;
+                final Point firstTail = tails.get(0);
+                final Point lastTail = tails.get(tails.size() - 1);
+                final double slope = (lastTail.x != firstTail.x)
+                        ? ((double) (lastTail.y - firstTail.y) / (lastTail.x - firstTail.x)) : 0;
+
+                // Stem direction from first chord (tails vs heads side)
+                final boolean stemUp = firstTail.y < sorted.get(0).getHeadLocation().y;
+                final double dir = stemUp ? 1 : -1;
+
+                int maxLevel = 0;
+
+                for (int b : pattern.beams) {
+                    maxLevel = Math.max(maxLevel, b);
+                }
+
+                // Per-stem tail abscissae for y computation
+                final List<Integer> stemX = new ArrayList<>();
+
+                for (StemInter stem : stems) {
+                    stemX.add(stem.getCenter().x);
+                }
+
+                for (int level = 1; level <= maxLevel; level++) {
+                    final double dy = (level - 1) * (height + interline * 0.4) * dir;
+                    int runStart = -1;
+
+                    for (int i = 0; i <= sorted.size(); i++) {
+                        final boolean inRun = (i < sorted.size()) && (pattern.beams[i] >= level);
+
+                        if (inRun && runStart < 0) {
+                            runStart = i;
+                        }
+
+                        if (!inRun && runStart >= 0) {
+                            final int runEnd = i - 1;
+
+                            if (runEnd > runStart) {
+                                // Full beam over the run
+                                final double x1 = stemX.get(runStart);
+                                final double x2 = stemX.get(runEnd);
+                                final double y1 = tailY(
+                                        firstTail,
+                                        slope,
+                                        x1) + dy;
+                                final double y2 = tailY(
+                                        firstTail,
+                                        slope,
+                                        x2) + dy;
+                                final BeamInter beam = new BeamInter(1.0);
+                                beam.setMedianAndHeight(new Line2D.Double(x1, y1, x2, y2), height);
+                                beam.setManual(true);
+                                beam.setStaff(sorted.get(0).getStaff());
+                                newBeams.add(beam);
+
+                                final List<Link> beamLinks = new ArrayList<>();
+
+                                for (int k = runStart; k <= runEnd; k++) {
+                                    final BeamStemRelation rel = new BeamStemRelation();
+                                    rel.setManual(true);
+                                    beamLinks.add(new Link(stems.get(k), rel, true));
+                                }
+
+                                seq.add(
+                                        new AdditionTask(
+                                                sig,
+                                                beam,
+                                                beam.getBounds(),
+                                                beamLinks));
+                            } else {
+                                // Isolated note: hook (forward, unless last of group)
+                                final boolean forward = runStart < sorted.size() - 1;
+                                addHook(
+                                        seq,
+                                        sig,
+                                        sorted.get(runStart),
+                                        stems.get(runStart),
+                                        forward,
+                                        slope,
+                                        height,
+                                        interline,
+                                        dir,
+                                        newBeams);
+                            }
+
+                            runStart = -1;
+                        }
+                    }
+                }
+
+                // One group embracing all new beams
+                newGroup.setManual(true);
+                newGroup.setStaff(sorted.get(0).getStaff());
+
+                final List<Link> groupLinks = new ArrayList<>();
+
+                for (AbstractBeamInter beam : newBeams) {
+                    groupLinks.add(new Link(beam, new Containment(), true));
+                }
+
+                final Rectangle groupBounds = Entities.getBounds(
+                        new ArrayList<Inter>(newBeams));
+                seq.add(new AdditionTask(sig, newGroup, groupBounds, groupLinks));
+
+                // Triplet bracket if needed
+                if (pattern.triplet) {
+                    triplet = new TupletInter(null, Shape.TUPLET_THREE, 1.0);
+                    triplet.setManual(true);
+
+                    final List<Link> tupletLinks = new ArrayList<>();
+
+                    for (HeadChordInter ch : sorted) {
+                        tupletLinks.add(new Link(ch, new ChordTupletRelation(), false));
+                    }
+
+                    final Rectangle tupletBounds = Entities.getBounds(
+                            new ArrayList<Inter>(sorted));
+                    seq.add(new AdditionTask(sig, triplet, tupletBounds, tupletLinks));
+                }
+
+                logger.debug("Pattern {} on {} chords", pattern.label, sorted.size());
+            }
+
+            @Override
+            protected void publish ()
+            {
+                for (AbstractBeamInter beam : newBeams) {
+                    sheet.getInterIndex().publish(beam);
+                }
+
+                sheet.getInterIndex().publish(newGroup);
+
+                if (triplet != null) {
+                    sheet.getInterIndex().publish(triplet);
+                }
+            }
+
+            /**
+             * Y of the tails line at a given abscissa.
+             */
+            private double tailY (Point firstTail,
+                                  double slope,
+                                  double x)
+            {
+                return firstTail.y + slope * (x - firstTail.x);
+            }
+
+            /**
+             * Create a hook on one stem, parallel to the group slope.
+             */
+            private void addHook (UITaskList seq,
+                                   SIGraph sig,
+                                   HeadChordInter chord,
+                                   StemInter stem,
+                                   boolean forward,
+                                   double slope,
+                                   double height,
+                                   double interline,
+                                   double dir,
+                                   List<AbstractBeamInter> newBeams)
+            {
+                // Hook sits one beam step beyond level-1 line
+                final double dy = (height + interline * 0.4) * dir;
+                final int x1 = stem.getCenter().x;
+                final double length = interline * 1.5;
+                final double x2 = forward ? (x1 + length) : (x1 - length);
+                final double y1 = tailY(chord.getTailLocation(), slope, x1) + dy;
+                final Line2D median = new Line2D.Double(x1, y1, x2, y1 + slope * (x2 - x1));
+                final BeamHookInter hook = new BeamHookInter(1.0);
+                hook.setMedianAndHeight(median, height);
+                hook.setManual(true);
+                hook.setStaff(chord.getStaff());
+                newBeams.add(hook);
+
+                final BeamStemRelation rel = new BeamStemRelation();
+                rel.setManual(true);
+                seq.add(
+                        new AdditionTask(
+                                sig,
+                                hook,
+                                hook.getBounds(),
+                                java.util.Collections.singletonList(new Link(stem, rel, true))));
+            }
+        }.execute();
+    }
     //------------------//
     // parallelizeBeams //
     //------------------//
@@ -2825,6 +3070,80 @@ public class InterController
     }
 
     //~ Inner Classes ------------------------------------------------------------------------------
+
+    //---------------//
+    // BeamPattern //
+    //---------------//
+    /**
+     * A beam pattern: beam count per note (1 = eighth, 2 = sixteenth, ...),
+     * optionally a triplet. Full beams span runs of notes sharing a level,
+     * isolated notes get hooks.
+     */
+    public static class BeamPattern
+    {
+        /** Short label, e.g. "16-16-8". */
+        public final String label;
+
+        /** Beam count per note. */
+        public final int[] beams;
+
+        /** Whether a triplet bracket is added. */
+        public final boolean triplet;
+
+        public BeamPattern (String label,
+                            int[] beams,
+                            boolean triplet)
+        {
+            this.label = label;
+            this.beams = beams;
+            this.triplet = triplet;
+        }
+
+        /** Number of notes. */
+        public int size ()
+        {
+            return beams.length;
+        }
+
+        @Override
+        public String toString ()
+        {
+            return label + (triplet ? " x3" : "");
+        }
+
+        /** All built-in patterns, by note count. */
+        public static final List<BeamPattern> ALL = List.of(
+                new BeamPattern("8-8", new int[] { 1, 1 }, false),
+                new BeamPattern("16-16", new int[] { 2, 2 }, false),
+                new BeamPattern("8-16", new int[] { 1, 2 }, false),
+                new BeamPattern("16-8", new int[] { 2, 1 }, false),
+                new BeamPattern("8-8-8", new int[] { 1, 1, 1 }, false),
+                new BeamPattern("16-16-16", new int[] { 2, 2, 2 }, false),
+                new BeamPattern("16-16-8", new int[] { 2, 2, 1 }, false),
+                new BeamPattern("8-16-16", new int[] { 1, 2, 2 }, false),
+                new BeamPattern("16-8-16", new int[] { 2, 1, 2 }, false),
+                new BeamPattern("8-16-8", new int[] { 1, 2, 1 }, false),
+                new BeamPattern("8-8-8-8", new int[] { 1, 1, 1, 1 }, false),
+                new BeamPattern("16-16-16-16", new int[] { 2, 2, 2, 2 }, false),
+                new BeamPattern("8-8-8", new int[] { 1, 1, 1 }, true),
+                new BeamPattern("16-16-16", new int[] { 2, 2, 2 }, true));
+
+        /**
+         * Report patterns matching a note count.
+         */
+        public static List<BeamPattern> forSize (int size)
+        {
+            final List<BeamPattern> list = new ArrayList<>();
+
+            for (BeamPattern pattern : ALL) {
+                if (pattern.size() == size) {
+                    list.add(pattern);
+                }
+            }
+
+            return list;
+        }
+    }
 
     //--------------//
     // BeamMoveTask //

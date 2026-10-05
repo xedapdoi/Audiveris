@@ -62,6 +62,7 @@ import org.audiveris.omr.ui.Board;
 import org.audiveris.omr.ui.BoardsPane;
 import org.audiveris.omr.ui.Colors;
 import org.audiveris.omr.ui.ViewParameters;
+import org.audiveris.omr.ui.util.UIPredicates;
 import org.audiveris.omr.ui.ViewParameters.SelectionMode;
 import org.audiveris.omr.ui.selection.EntityListEvent;
 import org.audiveris.omr.ui.selection.EntityService;
@@ -78,7 +79,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Color;
+import java.awt.Cursor;
 import java.awt.Graphics2D;
+import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.Rectangle;
 import static java.awt.RenderingHints.KEY_ANTIALIASING;
@@ -240,6 +243,28 @@ public class SheetEditor
     {
         view.objectEditor = null;
         refresh();
+    }
+
+    //-----------------//
+    // toggleEditMode //
+    //-----------------//
+    /**
+     * Toggle inter edit mode: end the current editing if any, else start
+     * editing the single selected inter if any.
+     */
+    public void toggleEditMode ()
+    {
+        if (view.objectEditor != null) {
+            view.objectEditor.endProcess();
+            refresh();
+        } else {
+            final List<Inter> selected = sheet.getInterIndex().getEntityService()
+                    .getSelectedEntityList();
+
+            if (selected != null && selected.size() == 1) {
+                openEditMode(selected.get(0));
+            }
+        }
     }
 
     //----------------//
@@ -602,7 +627,7 @@ public class SheetEditor
             // Arrow keys + Enter key for inter editor
             bindInterEditingKeys();
             addKeyListener(keyListener);
-
+            addKeyListener(new SpacePanListener(this));
         }
 
         //----------------------//
@@ -1162,6 +1187,72 @@ public class SheetEditor
                 if (objectEditor != null) {
                     objectEditor.endProcess();
                     refresh();
+                }
+            }
+        }
+    }
+
+    //------------------//
+    // SpacePanListener //
+    //------------------//
+    /**
+     * Space bar handling: hold to pan the zoomed view (Photoshop style),
+     * quick tap to toggle note edit mode.
+     */
+    private class SpacePanListener
+            extends KeyAdapter
+    {
+        private final JComponent view;
+
+        private boolean spaceDown;
+
+        private long pressTime;
+
+        private Point pressPoint;
+
+        SpacePanListener (JComponent view)
+        {
+            this.view = view;
+        }
+
+        @Override
+        public void keyPressed (KeyEvent e)
+        {
+            if (e.getKeyCode() == KeyEvent.VK_SPACE && !spaceDown) {
+                spaceDown = true;
+                pressTime = System.currentTimeMillis();
+
+                try {
+                    pressPoint = MouseInfo.getPointerInfo().getLocation();
+                } catch (Exception ignored) {
+                    pressPoint = null;
+                }
+
+                UIPredicates.setSpaceDown(true);
+                view.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+            }
+        }
+
+        @Override
+        public void keyReleased (KeyEvent e)
+        {
+            if (e.getKeyCode() == KeyEvent.VK_SPACE && spaceDown) {
+                spaceDown = false;
+                UIPredicates.setSpaceDown(false);
+                view.setCursor(Cursor.getDefaultCursor());
+
+                final long duration = System.currentTimeMillis() - pressTime;
+
+                if (duration < 350) {
+                    try {
+                        final Point now = MouseInfo.getPointerInfo().getLocation();
+
+                        if (pressPoint == null || now.distance(pressPoint) < 5) {
+                            toggleEditMode();
+                        }
+                    } catch (Exception ignored) {
+                        toggleEditMode();
+                    }
                 }
             }
         }

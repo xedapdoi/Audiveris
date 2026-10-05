@@ -87,6 +87,25 @@ public abstract class UIPredicates
         return SwingUtilities.isRightMouseButton(e) && !SwingUtilities.isLeftMouseButton(e);
     }
 
+    /**
+     * Whether the space bar is currently held down (pan mode).
+     * Set by the sheet editor, read by {@link #isDragWanted}.
+     */
+    private static volatile boolean spaceDown;
+
+    //---------------//
+    // setSpaceDown //
+    //---------------//
+    /**
+     * Tell whether the space bar is held down.
+     *
+     * @param down true when pressed
+     */
+    public static void setSpaceDown (boolean down)
+    {
+        spaceDown = down;
+    }
+
     //--------------//
     // isDragWanted //
     //--------------//
@@ -100,6 +119,11 @@ public abstract class UIPredicates
      */
     public static boolean isDragWanted (MouseEvent e)
     {
+        // Space bar held: pan with any button (Photoshop style)
+        if (spaceDown) {
+            return true;
+        }
+
         if (WellKnowns.MAC_OS_X) {
             return e.isAltDown();
         } else {

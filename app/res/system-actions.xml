@@ -63,6 +63,7 @@
     <action domain="SHEET" section="50" class="org.audiveris.omr.sheet.ui.BookActions" method="sampleSheet"             topic="SAMPLES"/>
     <action domain="SHEET" section="50" class="org.audiveris.omr.sheet.ui.BookActions" method="annotateSheet"           topic="ANNOTATIONS"/>
     <action domain="SHEET" section="60" class="org.audiveris.omr.sheet.ui.BookActions" method="printSheetWatch"         topic="SPECIFIC_ITEMS"/>
+    <action domain="SHEET" section="65" class="org.audiveris.omr.sig.ui.BeamToolActions" method="openBeamPatterns" button="javax.swing.JButton"/>
 
 <!--    STEP menu is generated automatically and thus not listed here -->
 
